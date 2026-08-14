@@ -55,7 +55,6 @@ jobs:
           sha256sum source.b64
           base64 --decode source.b64 > source.zip
           echo "Decoded ZIP bytes: $(wc -c < source.zip)"
-          unzip -t source.zip
           unzip -o source.zip
           rm -rf .bootstrap source.b64 source.zip
 
