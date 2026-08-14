@@ -10,23 +10,15 @@ from src.domain.models import GraphStrategy
 from src.llm.client import LLMError
 from src.llm.service import create_ai_analyst_service
 from src.services import TimesheetDataService
-from src.ui.components import render_shared_filters
+from src.ui.components import render_llm_provider_selector, render_shared_filters
 from src.utils.config import get_config
 
 config = get_config()
 analytics_service = AnalyticsService(config.db_path)
 dataset_service = TimesheetDataService(config.db_path)
-ai_service = create_ai_analyst_service(
-    db_path=config.db_path,
-    provider=config.llm_provider,
-    model=config.llm_model,
-    timeout_seconds=config.llm_timeout_seconds,
-    api_key_env=config.llm_api_key_env,
-    ollama_host=config.ollama_host,
-)
 
 
-def filter_signature(filters) -> tuple:
+def filter_signature(filters, llm_provider: str) -> tuple:
     return (
         filters.start_date,
         filters.end_date,
@@ -35,6 +27,7 @@ def filter_signature(filters) -> tuple:
         tuple(filters.task_keys),
         tuple(filters.states),
         filters.note_keyword,
+        llm_provider,
     )
 
 
@@ -139,34 +132,45 @@ if source_dataframe.empty:
     st.stop()
 
 filters, _ = render_shared_filters(source_dataframe)
-current_filter_signature = filter_signature(filters)
-status = ai_service.get_status()
-provider_label = config.llm_provider.upper()
-with st.sidebar:
-    st.divider()
-    st.subheader("Status AI Analyst")
-    (st.success if status.available else st.warning)(
-        f"{provider_label} {'siap' if status.available else 'tidak tersedia'}: {status.model}"
+selected_provider = render_llm_provider_selector(config)
+selected_profile = config.llm_profile(selected_provider) if selected_provider != "off" else None
+ai_service = None
+status = None
+if selected_profile is not None:
+    ai_service = create_ai_analyst_service(
+        db_path=config.db_path,
+        provider=selected_profile.provider,
+        model=selected_profile.model,
+        timeout_seconds=config.llm_timeout_seconds,
+        api_key_env=selected_profile.api_key_env or config.openai_api_key_env,
+        ollama_host=selected_profile.host or config.ollama_host,
     )
-    st.caption("Ringkasan dasar tetap bisa dijalankan saat model LLM tidak tersedia.")
+    status = ai_service.get_status()
+
+current_filter_signature = filter_signature(filters, selected_provider)
+with st.sidebar:
+    st.subheader("Status AI Analyst")
+    if selected_provider == "off":
+        st.info("AI Off — ringkasan deterministik tetap tersedia.")
+    elif status is not None:
+        provider_label = "OPENAI" if selected_provider == "openai" else "OLLAMA"
+        (st.success if status.available else st.warning)(
+            f"{provider_label} {'siap' if status.available else 'tidak tersedia'}: {status.model}"
+        )
+        st.caption("Jika provider bermasalah, pindah ke LLM lain tanpa mengubah config/llm.conf.")
     with st.expander("Cara kerja", expanded=False):
         st.markdown(
             "1. Memakai data dari Load Data.  \n"
             "2. Menerapkan filter.  \n"
             "3. Menghitung metrik secara deterministik.  \n"
             "4. Menyusun ringkasan dan rekomendasi.  \n"
-            "5. Jika tersedia, model LLM menjelaskan hasil tanpa mengubah angka."
+            "5. Jika LLM aktif dan tersedia, model menjelaskan hasil tanpa mengubah angka."
         )
 
 question = st.text_area(
     "Pertanyaan untuk AI",
     placeholder="Contoh: pola kerja mana yang perlu saya review terlebih dahulu?",
     height=82,
-)
-use_llm = st.checkbox(
-    "Buat narasi manajerial dengan model LLM",
-    value=config.llm_enabled,
-    help="Model LLM menjelaskan ringkasan data yang sudah dihitung Python. Model tidak menentukan atau mengubah angka.",
 )
 
 if st.button("Jalankan analisis", type="primary"):
@@ -178,7 +182,7 @@ if st.button("Jalankan analisis", type="primary"):
         recommendations = build_recommendations(snapshot)
         st.write("Tahap 4/5 — Menyusun ringkasan dan rekomendasi berbasis data.")
         ai_result, ai_error = None, None
-        if use_llm and status.available:
+        if ai_service is not None and status is not None and status.available:
             try:
                 effective_question = question.strip() or (
                     "Berikan ringkasan eksekutif atas pola timesheet pada filter aktif. Jelaskan sinyal utama, hal yang perlu "
@@ -189,13 +193,19 @@ if st.button("Jalankan analisis", type="primary"):
                     question=effective_question,
                     result_payload=brief,
                 )
-                ai_result = {"explanation": explanation, "payload": brief, "duration": duration}
+                ai_result = {
+                    "explanation": explanation,
+                    "payload": brief,
+                    "duration": duration,
+                    "provider": selected_provider,
+                    "model": status.model,
+                }
                 st.write(f"Tahap 5/5 — {status.model} menyiapkan narasi manajerial ({duration:.1f} detik).")
             except (LLMError, ValueError) as exc:
                 ai_error = str(exc)
                 st.write("Tahap 5/5 — Penjelasan model LLM tidak tersedia; ringkasan deterministik tetap selesai.")
         else:
-            st.write("Tahap 5/5 — Narasi model LLM dilewati (dinonaktifkan atau provider tidak tersedia).")
+            st.write("Tahap 5/5 — Narasi model LLM dilewati (Off atau provider tidak tersedia).")
         progress.update(label="Analisis selesai", state="complete", expanded=False)
     st.session_state["ai_analyst_result"] = {
         "snapshot": snapshot,
@@ -207,10 +217,10 @@ if st.button("Jalankan analisis", type="primary"):
 
 result = st.session_state.get("ai_analyst_result")
 if result is None:
-    st.info("Pilih filter bila diperlukan, lalu tekan **Jalankan analisis**. Status proses akan tampil di halaman ini.")
+    st.info("Pilih filter bila diperlukan, pilih LLM, lalu tekan **Jalankan analisis**.")
     st.stop()
 if result.get("filter_signature") != current_filter_signature:
-    st.info("Filter berubah sejak analisis terakhir. Tekan **Jalankan analisis** kembali agar seluruh insight dan rekomendasi mengikuti filter aktif.")
+    st.info("Filter atau pilihan LLM berubah sejak analisis terakhir. Tekan **Jalankan analisis** kembali agar hasil mengikuti scope aktif.")
     st.stop()
 
 snapshot = result["snapshot"]
@@ -240,7 +250,7 @@ if result["ai_error"]:
     st.warning(f"Penjelasan model LLM tidak tersedia: {result['ai_error']}")
 if result["ai_result"]:
     explanation = result["ai_result"]["explanation"]
-    st.subheader(f"Penjelasan {status.model}")
+    st.subheader(f"Penjelasan {result['ai_result']['model']}")
     st.write(explanation.summary)
     for heading, items in (
         ("Sinyal utama dari data", explanation.observations),
@@ -331,8 +341,9 @@ with tabs[2]:
     st.json(build_scope_payload(snapshot, filters)["filters"])
 
 with st.expander("Detail teknis untuk pengembangan", expanded=False):
+    model_label = selected_profile.model if selected_profile is not None else "-"
     st.caption(
-        f"LLM provider: {config.llm_provider} | model: {config.llm_model} | config: {config.llm_config_path}"
+        f"LLM runtime: {selected_provider} | model: {model_label} | config registry: {config.llm_config_path}"
     )
     if result["ai_result"]:
         st.code(json.dumps(result["ai_result"]["payload"], indent=2, ensure_ascii=False), language="json")
