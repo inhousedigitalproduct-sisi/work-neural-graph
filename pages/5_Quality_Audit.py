@@ -5,7 +5,7 @@ import io
 import pandas as pd
 import streamlit as st
 
-from src.llm.client import OllamaError, OllamaMalformedResponseError
+from src.llm.client import LLMError
 from src.llm.service import create_ai_analyst_service
 from src.quality.timesheet_quality import (
     build_topic_summary,
@@ -26,10 +26,12 @@ from src.utils.config import get_config
 config = get_config()
 dataset_service = TimesheetDataService(config.db_path)
 ai_service = create_ai_analyst_service(
-    config.db_path,
-    config.ollama_host,
-    config.ollama_model,
-    config.ollama_timeout_seconds,
+    db_path=config.db_path,
+    provider=config.llm_provider,
+    model=config.llm_model,
+    timeout_seconds=config.llm_timeout_seconds,
+    api_key_env=config.llm_api_key_env,
+    ollama_host=config.ollama_host,
 )
 
 
@@ -87,7 +89,7 @@ if source_dataframe.empty:
     st.stop()
 
 filters, _ = render_shared_filters(source_dataframe)
-qwen_status = ai_service.get_status()
+llm_status = ai_service.get_status()
 with st.sidebar:
     st.divider()
     st.subheader("Pengaturan audit")
@@ -109,11 +111,14 @@ with st.sidebar:
     )
     use_embeddings = st.toggle(
         "Analisis relasi semantik",
-        value=True,
+        value=config.embedding_enabled,
         help="Menggunakan model embedding Ollama dan dapat membutuhkan waktu lebih lama.",
     )
-    st.caption(f"Qwen interpretasi: {config.ollama_model} ({'siap' if qwen_status.available else 'offline'})")
-    st.caption(f"Model embedding: {config.ollama_embedding_model}")
+    st.caption(
+        f"LLM interpretasi: {config.llm_provider.upper()} / {config.llm_model} "
+        f"({'siap' if llm_status.available else 'offline'})"
+    )
+    st.caption(f"Model embedding: {config.embedding_provider.upper()} / {config.embedding_model}")
     with st.expander("Cara membaca hasil", expanded=False):
         st.markdown(
             "- **Copy/near-copy**: Note identik atau hampir sama milik pegawai yang sama; perlu verifikasi, bukan otomatis kesalahan.  \n"
@@ -169,7 +174,7 @@ if st.button("Jalankan audit kualitas", type="primary"):
                 vectors = embed_texts(
                     filtered["analysis_text"].tolist(),
                     config.ollama_host,
-                    config.ollama_embedding_model,
+                    config.embedding_model,
                     lambda done, total: progress.progress(
                         done / total if total else 1,
                         text=f"Embedding: {done:,} / {total:,} entri",
@@ -179,13 +184,13 @@ if st.button("Jalankan audit kualitas", type="primary"):
                 semantic = enrich_semantic_pairs(semantic_raw, filtered)
                 filtered["Topic Group"] = cluster_vectors(vectors, semantic_threshold)
                 topics = build_topic_summary(filtered)
-            except Exception as exc:  # Ollama/model failures must not hide deterministic results.
+            except Exception as exc:  # Embedding/model failures must not hide deterministic results.
                 embedding_error = str(exc)
 
         quality_qwen = None
         qwen_error = None
         activity.info("Tahap 5/6 — Menyusun rekomendasi high-level untuk manajemen.")
-        if qwen_status.available:
+        if llm_status.available:
             try:
                 brief = build_quality_llm_brief(kpis, entry_scores, copies, overlaps, repeated, topics)
                 quality_qwen, _duration, _ = ai_service.explain_result(
@@ -197,7 +202,7 @@ if st.button("Jalankan audit kualitas", type="primary"):
                     ),
                     result_payload=brief,
                 )
-            except (OllamaError, OllamaMalformedResponseError, ValueError) as exc:
+            except (LLMError, ValueError) as exc:
                 qwen_error = str(exc)
 
         activity.info("Tahap 6/6 — Menyiapkan tabel bukti dan ringkasan akhir.")
@@ -289,14 +294,14 @@ if result["quality_qwen"] is not None:
         for item in explanation.recommended_investigation:
             st.write(f"- {item}")
 else:
-    st.caption("Qwen tidak tersedia; rekomendasi deterministik tetap ditampilkan.")
+    st.caption("LLM tidak tersedia; rekomendasi deterministik tetap ditampilkan.")
     display_deterministic_recommendations(result["recommendations"])
 
 with st.expander("Dasar rekomendasi deterministik", expanded=False):
     display_deterministic_recommendations(result["recommendations"])
 
 if result["qwen_error"]:
-    st.warning("Rekomendasi Qwen tidak tersedia, tetapi audit deterministik tetap selesai: " + result["qwen_error"])
+    st.warning("Rekomendasi LLM tidak tersedia, tetapi audit deterministik tetap selesai: " + result["qwen_error"])
 if result["embedding_error"]:
     st.warning("Audit deterministik selesai, tetapi relasi semantik tidak dapat dibuat: " + result["embedding_error"])
 
