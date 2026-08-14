@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from src.llm.client import OpenAIClient
@@ -74,3 +76,22 @@ def test_openai_client_reports_missing_environment_secret() -> None:
     assert status.provider == "openai"
     assert status.model == "gpt-5-mini"
     assert "OPENAI_API_KEY" in status.message
+
+
+def test_ai_enabled_pages_do_not_reference_removed_ollama_config_attributes() -> None:
+    page_paths = (
+        Path("pages/2_Neural_Graph.py"),
+        Path("pages/4_AI_Analyst.py"),
+        Path("pages/5_Quality_Audit.py"),
+    )
+    removed_references = (
+        "config.ollama_model",
+        "config.ollama_timeout_seconds",
+        "config.ollama_embedding_model",
+    )
+
+    for page_path in page_paths:
+        source = page_path.read_text(encoding="utf-8")
+        for removed_reference in removed_references:
+            assert removed_reference not in source, f"{page_path} still uses {removed_reference}"
+        assert "render_llm_provider_selector" in source, f"{page_path} does not use the shared LLM selector"
