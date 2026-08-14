@@ -1,6 +1,6 @@
 # Work Neural Graph
 
-Work Neural Graph is a local-first Streamlit application for importing timesheet files, normalizing them into a deterministic internal schema, persisting the result to SQLite, exploring cross-date task continuity as an interactive graph, analyzing fragmentation/continuity/context switching/concurrency with deterministic Python metrics, and optionally using local Ollama + Qwen as an interpretation layer.
+Work Neural Graph is a local-first Streamlit application for importing timesheet files, normalizing them into a deterministic internal schema, persisting the result to SQLite, exploring cross-date task continuity as an interactive graph, analyzing fragmentation/continuity/context switching/concurrency with deterministic Python metrics, and optionally using a configured LLM provider as an interpretation layer.
 
 ## Phase 04 Scope
 
@@ -23,15 +23,15 @@ This phase includes everything from Phases 01-03 plus:
 - Concurrency analytics for employee/date, project/date, and overall dates
 - KPI service reused by the Dashboard, Neural Graph, and Fragmentation pages
 - Dedicated Fragmentation analysis page with a task timeline
-- Central Ollama configuration
-- Local Ollama HTTP client with health, model, timeout, and malformed-response handling
+- Provider-based LLM configuration in `config/llm.conf`
+- OpenAI API support for AI Analyst explanations
+- Ollama client retained as an optional fallback provider
 - Strict structured intent parsing and structured explanation schemas
 - Safe deterministic analytics dispatcher
 - Dedicated AI Analyst page
-- Offline graceful degradation when Ollama is unavailable
-- Mocked unit tests for the LLM integration
+- Graceful degradation when the configured LLM provider is unavailable
 - Synthetic sample dataset
-- Unit tests for loading, normalization, validation, persistence, graph building, analytics, and mocked LLM flows
+- Unit tests for loading, normalization, validation, persistence, graph building, analytics, and LLM flows
 
 This phase intentionally does not implement Phase 05 graph intelligence enhancements yet.
 
@@ -40,6 +40,8 @@ This phase intentionally does not implement Phase 05 graph intelligence enhancem
 ```text
 .
 ├── app.py
+├── config/
+│   └── llm.conf
 ├── data/
 │   └── sample_timesheet.csv
 ├── pages/
@@ -68,6 +70,37 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
+
+The default LLM provider is OpenAI. Keep the API key outside source code and outside Git:
+
+```bash
+export OPENAI_API_KEY="your_api_key_here"
+```
+
+For a persistent macOS shell configuration, place the export in `~/.zshrc` and reload the shell. Never commit an API key to this repository.
+
+## LLM Configuration
+
+Runtime LLM settings are stored in `config/llm.conf`:
+
+```ini
+[llm]
+provider = openai
+model = gpt-5-mini
+api_key_env = OPENAI_API_KEY
+timeout_seconds = 180
+
+[embedding]
+enabled = false
+provider = ollama
+model = qwen3-embedding:0.6b
+```
+
+`api_key_env` contains only the environment variable name. The secret value itself must remain in the local/server environment.
+
+The default embedding model remains configured but disabled. It is reserved for future semantic task intelligence and is not required by the current AI Analyst flow.
+
+To use Ollama instead of OpenAI, change the `[llm]` provider/model in `config/llm.conf` and ensure the configured Ollama model is installed locally.
 
 ## Run Tests
 
@@ -168,7 +201,7 @@ Concurrency is reported as:
 Core principle:
 
 ```text
-Python is the truth engine. Qwen is the interpretation engine.
+Python is the truth engine. The configured LLM is the interpretation engine.
 ```
 
 The AI path is:
@@ -179,28 +212,26 @@ User Question
   -> Validated Intent
   -> Safe Python Dispatcher
   -> Deterministic Result Payload
-  -> Structured Explanation
+  -> Structured LLM Explanation
 ```
 
 The LLM does not generate SQL, does not generate Python, and does not become the source of truth.
 
-### Ollama Prerequisite
+### Default Provider
 
-Install and run Ollama locally, then ensure the configured model exists.
+The default provider is OpenAI with `gpt-5-mini`. The application uses the API key referenced by `api_key_env` in `config/llm.conf`; by default this is `OPENAI_API_KEY`.
 
-Typical local checks:
+The application never stores or prints the API key. If the key is missing or the provider is unavailable, the deterministic analytics pages continue to work.
 
-```bash
-ollama list
+### Optional Ollama Fallback
+
+Ollama support remains available as an alternative provider. The default local endpoint is:
+
+```text
+http://localhost:11434
 ```
 
-### Configuration
-
-Use `.env.example` as a reference:
-
-- `OLLAMA_HOST`: local Ollama endpoint, default `http://localhost:11434`
-- `OLLAMA_MODEL`: local model name, default `qwen3.5`
-- `OLLAMA_TIMEOUT_SECONDS`: request timeout for Ollama calls
+When using Ollama, install the selected model locally and configure the `[llm]` section accordingly.
 
 ### Supported Intents
 
@@ -211,21 +242,24 @@ Use `.env.example` as a reference:
 - `project_comparison`
 - `task_summary`
 
-### Offline Behavior
+### Provider Failure Behavior
 
-If Ollama is unavailable or the configured model is missing:
+If the configured LLM provider or model is unavailable:
 
 - Dashboard still works
 - Neural Graph still works
 - Fragmentation page still works
-- AI Analyst shows a clear status/error message instead of crashing
+- AI Analyst keeps the deterministic summary and shows a clear provider status/error instead of crashing
 
 ## Environment
 
-Use `.env.example` as a reference:
+Use `.env.example` as a reference. Important variables include:
 
 - `WNG_DB_PATH`: SQLite database location
 - `WNG_LOG_LEVEL`: Python logging level
+- `WNG_LLM_CONFIG`: path to the LLM configuration file, default `config/llm.conf`
+- `OPENAI_API_KEY`: OpenAI API secret; set only in the local/server environment
+- `LLM_PROVIDER`, `LLM_MODEL`, `LLM_TIMEOUT_SECONDS`: optional runtime overrides
 
 ## Definition of Done Notes
 
@@ -236,6 +270,7 @@ Use `.env.example` as a reference:
 - Same date-pair task continuations are aggregated into one final edge.
 - Analytics are deterministic and derived from filtered data, not from LLM output.
 - The AI Analyst uses validated structured intent plus deterministic payloads before any model explanation.
+- API secrets are not stored in source code or tracked configuration files.
 - Normalized schema fields are:
   - `entry_id`
   - `employee`
@@ -251,6 +286,7 @@ Use `.env.example` as a reference:
 
 - Add graph intelligence enhancements in Phase 05.
 - Add richer import history views and row-level validation summaries.
+- Activate and implement embedding-based semantic task intelligence when required.
 
 ## Limitations
 
