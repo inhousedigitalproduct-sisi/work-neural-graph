@@ -55,7 +55,13 @@ jobs:
           sha256sum source.b64
           base64 --decode source.b64 > source.zip
           echo "Decoded ZIP bytes: $(wc -c < source.zip)"
+          set +e
           unzip -o source.zip
+          unzip_status=$?
+          set -e
+          if [ "$unzip_status" -gt 1 ]; then
+            exit "$unzip_status"
+          fi
           rm -rf .bootstrap source.b64 source.zip
 
       - name: Commit extracted source
