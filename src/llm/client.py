@@ -39,6 +39,67 @@ class StructuredChatResult:
     duration_seconds: float
 
 
+def _openai_error_code(exc: Exception) -> str:
+    """Extract a stable OpenAI error code/type without exposing request secrets."""
+    direct_code = getattr(exc, "code", None)
+    if direct_code:
+        return str(direct_code)
+
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        payload = body.get("error", body)
+        if isinstance(payload, dict):
+            code = payload.get("code") or payload.get("type")
+            if code:
+                return str(code)
+    return ""
+
+
+def _describe_openai_error(exc: Exception) -> str:
+    """Return an actionable, secret-safe description for OpenAI SDK errors."""
+    error_name = exc.__class__.__name__
+    error_code = _openai_error_code(exc)
+    normalized_code = error_code.lower()
+    normalized_message = str(exc).lower()
+    suffix = f" (code: {error_code})" if error_code else ""
+
+    if error_name == "RateLimitError":
+        quota_markers = ("insufficient_quota", "billing", "quota", "usage_limit")
+        if any(marker in normalized_code or marker in normalized_message for marker in quota_markers):
+            return (
+                "Kuota/billing OpenAI API tidak tersedia atau batas penggunaan sudah tercapai. "
+                "Periksa billing/usage limit OpenAI API atau pindah ke Qwen Local." + suffix
+            )
+        return (
+            "OpenAI API sedang terkena rate limit. Coba lagi setelah beberapa saat atau pindah ke Qwen Local."
+            + suffix
+        )
+
+    if error_name == "AuthenticationError":
+        return (
+            "Autentikasi OpenAI gagal. Periksa environment variable API key yang dikonfigurasi dan pastikan key masih aktif."
+            + suffix
+        )
+    if error_name == "PermissionDeniedError":
+        return (
+            "API key tidak memiliki izin untuk model/resource OpenAI yang dipilih. Periksa akses project/model atau pilih provider lain."
+            + suffix
+        )
+    if error_name == "NotFoundError":
+        return (
+            "Model atau resource OpenAI yang dikonfigurasi tidak ditemukan/tersedia untuk project API ini."
+            + suffix
+        )
+    if error_name == "APITimeoutError":
+        return "Request ke OpenAI melewati batas waktu. Coba lagi atau gunakan Qwen Local." + suffix
+    if error_name == "APIConnectionError":
+        return "Tidak dapat terhubung ke OpenAI API. Periksa koneksi internet/network lalu coba lagi." + suffix
+    if error_name == "BadRequestError":
+        return "OpenAI menolak request karena format/parameter tidak valid. Periksa konfigurasi model dan payload." + suffix
+
+    return f"OpenAI API tidak tersedia ({error_name}). Coba lagi atau gunakan Qwen Local." + suffix
+
+
 class OpenAIClient:
     def __init__(
         self,
@@ -58,7 +119,7 @@ class OpenAIClient:
                 available=False,
                 provider="openai",
                 model=self.model,
-                message=f"Environment variable '{self.api_key_env}' is not set.",
+                message=f"Environment variable '{self.api_key_env}' belum tersedia.",
             )
         try:
             self._client.models.retrieve(self.model)
@@ -67,13 +128,16 @@ class OpenAIClient:
                 available=False,
                 provider="openai",
                 model=self.model,
-                message=f"OpenAI API or configured model is unavailable ({exc.__class__.__name__}).",
+                message=_describe_openai_error(exc),
             )
         return LLMStatus(
             available=True,
             provider="openai",
             model=self.model,
-            message="OpenAI API is available.",
+            message=(
+                "Koneksi dan akses model terverifikasi. Quota/rate limit untuk generation baru dapat diketahui "
+                "saat request analisis dijalankan."
+            ),
         )
 
     def structured_chat(
@@ -84,7 +148,7 @@ class OpenAIClient:
     ) -> StructuredChatResult:
         del temperature  # Keep a provider-compatible interface; GPT-5 uses provider defaults here.
         if self._client is None:
-            raise LLMUnavailableError(f"Environment variable '{self.api_key_env}' is not set.")
+            raise LLMUnavailableError(f"Environment variable '{self.api_key_env}' belum tersedia.")
 
         schema_name = response_model.__name__[:64]
         started = perf_counter()
@@ -102,7 +166,7 @@ class OpenAIClient:
                 },
             )
         except OpenAIError as exc:
-            raise LLMUnavailableError(f"OpenAI request failed ({exc.__class__.__name__}).") from exc
+            raise LLMUnavailableError(_describe_openai_error(exc)) from exc
         duration = perf_counter() - started
 
         try:
