@@ -20,22 +20,20 @@ from src.quality.timesheet_quality import (
     semantic_pairs,
 )
 from src.services import TimesheetDataService
-from src.ui.components import render_shared_filters
+from src.ui.components import render_llm_provider_selector, render_shared_filters
 from src.utils.config import get_config
 
 config = get_config()
 dataset_service = TimesheetDataService(config.db_path)
-ai_service = create_ai_analyst_service(
-    db_path=config.db_path,
-    provider=config.llm_provider,
-    model=config.llm_model,
-    timeout_seconds=config.llm_timeout_seconds,
-    api_key_env=config.llm_api_key_env,
-    ollama_host=config.ollama_host,
-)
 
 
-def audit_signature(filters, fuzzy_threshold: float, semantic_threshold: float, use_embeddings: bool) -> tuple:
+def audit_signature(
+    filters,
+    fuzzy_threshold: float,
+    semantic_threshold: float,
+    use_embeddings: bool,
+    llm_provider: str,
+) -> tuple:
     return (
         filters.start_date,
         filters.end_date,
@@ -47,14 +45,34 @@ def audit_signature(filters, fuzzy_threshold: float, semantic_threshold: float, 
         round(float(fuzzy_threshold), 4),
         round(float(semantic_threshold), 4),
         bool(use_embeddings),
+        llm_provider,
     )
 
 
-def build_quality_llm_brief(kpis: dict, entries: pd.DataFrame, copies: pd.DataFrame, overlaps: pd.DataFrame, repeated: pd.DataFrame, topics: pd.DataFrame) -> dict:
+def build_quality_llm_brief(
+    kpis: dict,
+    entries: pd.DataFrame,
+    copies: pd.DataFrame,
+    overlaps: pd.DataFrame,
+    repeated: pd.DataFrame,
+    topics: pd.DataFrame,
+) -> dict:
     category_counts = entries["Kategori"].value_counts().to_dict() if not entries.empty else {}
     copy_types = copies["Jenis"].value_counts().to_dict() if not copies.empty and "Jenis" in copies.columns else {}
-    repeated_brief = repeated.head(5)[[column for column in ["Aktivitas", "Jumlah pengulangan", "Total jam", "Cenderung lama"] if column in repeated.columns]].to_dict(orient="records") if not repeated.empty else []
-    topic_brief = topics.head(5)[[column for column in ["Tema representatif", "Jumlah entri", "Total jam"] if column in topics.columns]].to_dict(orient="records") if not topics.empty else []
+    repeated_brief = repeated.head(5)[
+        [
+            column
+            for column in ["Aktivitas", "Jumlah pengulangan", "Total jam", "Cenderung lama"]
+            if column in repeated.columns
+        ]
+    ].to_dict(orient="records") if not repeated.empty else []
+    topic_brief = topics.head(5)[
+        [
+            column
+            for column in ["Tema representatif", "Jumlah entri", "Total jam"]
+            if column in topics.columns
+        ]
+    ].to_dict(orient="records") if not topics.empty else []
     return {
         "scope_kpi": kpis,
         "writing_categories": category_counts,
@@ -89,7 +107,21 @@ if source_dataframe.empty:
     st.stop()
 
 filters, _ = render_shared_filters(source_dataframe)
-llm_status = ai_service.get_status()
+selected_provider = render_llm_provider_selector(config)
+selected_profile = config.llm_profile(selected_provider) if selected_provider != "off" else None
+ai_service = None
+llm_status = None
+if selected_profile is not None:
+    ai_service = create_ai_analyst_service(
+        db_path=config.db_path,
+        provider=selected_profile.provider,
+        model=selected_profile.model,
+        timeout_seconds=config.llm_timeout_seconds,
+        api_key_env=selected_profile.api_key_env or config.openai_api_key_env,
+        ollama_host=selected_profile.host or config.ollama_host,
+    )
+    llm_status = ai_service.get_status()
+
 with st.sidebar:
     st.divider()
     st.subheader("Pengaturan audit")
@@ -114,10 +146,13 @@ with st.sidebar:
         value=config.embedding_enabled,
         help="Menggunakan model embedding Ollama dan dapat membutuhkan waktu lebih lama.",
     )
-    st.caption(
-        f"LLM interpretasi: {config.llm_provider.upper()} / {config.llm_model} "
-        f"({'siap' if llm_status.available else 'offline'})"
-    )
+    if selected_provider == "off":
+        st.caption("LLM interpretasi: Off")
+    elif llm_status is not None:
+        st.caption(
+            f"LLM interpretasi: {selected_provider.upper()} / {llm_status.model} "
+            f"({'siap' if llm_status.available else 'offline'})"
+        )
     st.caption(f"Model embedding: {config.embedding_provider.upper()} / {config.embedding_model}")
     with st.expander("Cara membaca hasil", expanded=False):
         st.markdown(
@@ -128,7 +163,13 @@ with st.sidebar:
             "- **Efektivitas**: proxy kualitas pencatatan, bukan nilai produktivitas atau kualitas hasil kerja."
         )
 
-current_audit_signature = audit_signature(filters, fuzzy_threshold, semantic_threshold, use_embeddings)
+current_audit_signature = audit_signature(
+    filters,
+    fuzzy_threshold,
+    semantic_threshold,
+    use_embeddings,
+    selected_provider,
+)
 
 if st.button("Jalankan audit kualitas", type="primary"):
     from src.graph.builder import apply_graph_filters
@@ -187,13 +228,13 @@ if st.button("Jalankan audit kualitas", type="primary"):
             except Exception as exc:  # Embedding/model failures must not hide deterministic results.
                 embedding_error = str(exc)
 
-        quality_qwen = None
-        qwen_error = None
+        quality_llm = None
+        llm_error = None
         activity.info("Tahap 5/6 — Menyusun rekomendasi high-level untuk manajemen.")
-        if llm_status.available:
+        if ai_service is not None and llm_status is not None and llm_status.available:
             try:
                 brief = build_quality_llm_brief(kpis, entry_scores, copies, overlaps, repeated, topics)
-                quality_qwen, _duration, _ = ai_service.explain_result(
+                quality_llm, _duration, _ = ai_service.explain_result(
                     question=(
                         "Buat rekomendasi high-level untuk manajemen berdasarkan audit kualitas timesheet ini. "
                         "Ringkas implikasi proses/kebijakan, sebutkan hal yang perlu didiskusikan manajemen, dan berikan pertanyaan "
@@ -203,7 +244,7 @@ if st.button("Jalankan audit kualitas", type="primary"):
                     result_payload=brief,
                 )
             except (LLMError, ValueError) as exc:
-                qwen_error = str(exc)
+                llm_error = str(exc)
 
         activity.info("Tahap 6/6 — Menyiapkan tabel bukti dan ringkasan akhir.")
         progress.progress(1.0, text="Audit selesai")
@@ -221,18 +262,22 @@ if st.button("Jalankan audit kualitas", type="primary"):
         "semantic_raw": semantic_raw,
         "topics": topics,
         "recommendations": deterministic_recommendations,
-        "quality_qwen": quality_qwen,
-        "qwen_error": qwen_error,
+        "quality_llm": quality_llm,
+        "llm_error": llm_error,
         "embedding_error": embedding_error,
         "audit_signature": current_audit_signature,
+        "llm_provider": selected_provider,
+        "llm_model": llm_status.model if llm_status is not None else None,
     }
 
 result = st.session_state.get("quality_audit_result")
 if result is None:
-    st.info("Pilih filter dan pengaturan audit, lalu tekan **Jalankan audit kualitas**.")
+    st.info("Pilih filter, pengaturan audit, dan LLM bila diperlukan, lalu tekan **Jalankan audit kualitas**.")
     st.stop()
 if result.get("audit_signature") != current_audit_signature:
-    st.info("Filter atau pengaturan audit berubah sejak proses terakhir. Jalankan audit kembali agar seluruh temuan dan rekomendasi mengikuti scope aktif.")
+    st.info(
+        "Filter, pengaturan audit, atau pilihan LLM berubah sejak proses terakhir. Jalankan audit kembali agar seluruh temuan dan rekomendasi mengikuti scope aktif."
+    )
     st.stop()
 
 kpis = result["kpis"]
@@ -278,8 +323,10 @@ st.info(
 st.caption("Indikator di halaman ini adalah sinyal kualitas pencatatan. Validasi konteks tetap diperlukan sebelum mengambil keputusan.")
 
 st.subheader("Rekomendasi")
-if result["quality_qwen"] is not None:
-    explanation = result["quality_qwen"]
+if result["quality_llm"] is not None:
+    explanation = result["quality_llm"]
+    model_label = result.get("llm_model") or "LLM"
+    st.caption(f"Narasi: {model_label}")
     st.write(explanation.summary)
     if explanation.observations:
         st.markdown("**Sinyal utama yang mendasari rekomendasi**")
@@ -294,14 +341,14 @@ if result["quality_qwen"] is not None:
         for item in explanation.recommended_investigation:
             st.write(f"- {item}")
 else:
-    st.caption("LLM tidak tersedia; rekomendasi deterministik tetap ditampilkan.")
+    st.caption("LLM Off/tidak tersedia; rekomendasi deterministik tetap ditampilkan.")
     display_deterministic_recommendations(result["recommendations"])
 
 with st.expander("Dasar rekomendasi deterministik", expanded=False):
     display_deterministic_recommendations(result["recommendations"])
 
-if result["qwen_error"]:
-    st.warning("Rekomendasi LLM tidak tersedia, tetapi audit deterministik tetap selesai: " + result["qwen_error"])
+if result["llm_error"]:
+    st.warning("Rekomendasi LLM tidak tersedia, tetapi audit deterministik tetap selesai: " + result["llm_error"])
 if result["embedding_error"]:
     st.warning("Audit deterministik selesai, tetapi relasi semantik tidak dapat dibuat: " + result["embedding_error"])
 
