@@ -248,6 +248,11 @@ else:
         f"{provider_label} / {model_label} membaca fakta yang sudah dihitung Python lalu menyusunnya menjadi ringkasan eksekutif. "
         "Fokusnya adalah pola kerja, area perhatian, dan bahan diskusi manajemen—bukan penilaian performa individu."
     )
+    if llm_status is not None:
+        if llm_status.available:
+            st.info(f"Status provider: terhubung. {llm_status.message}")
+        else:
+            st.warning(f"Status provider: tidak tersedia. {llm_status.message}")
 
 interpretation_available = (
     selected_provider != "off"
@@ -287,11 +292,18 @@ if st.button(button_label, disabled=not interpretation_available):
                 expanded=False,
             )
         except (LLMError, ValueError) as exc:
-            st.session_state["neural_graph_llm_error"] = str(exc)
+            st.session_state["neural_graph_llm_error"] = {
+                "provider": selected_provider,
+                "model": model_label,
+                "message": str(exc),
+            }
             llm_progress.update(label="Interpretasi LLM tidak tersedia", state="error", expanded=False)
 
-if st.session_state.get("neural_graph_llm_error"):
-    st.warning("Interpretasi LLM tidak tersedia: " + st.session_state["neural_graph_llm_error"])
+llm_error = st.session_state.get("neural_graph_llm_error")
+if isinstance(llm_error, dict) and llm_error.get("provider") == selected_provider:
+    st.warning("Interpretasi LLM tidak tersedia: " + llm_error["message"])
+    if selected_provider == "openai":
+        st.info("Anda dapat memilih **Qwen Local** di sidebar lalu menjalankan interpretasi kembali tanpa mengubah config/llm.conf.")
 if st.session_state.get("neural_graph_llm_result"):
     llm_result = st.session_state["neural_graph_llm_result"]
     if llm_result.get("provider") == selected_provider:
