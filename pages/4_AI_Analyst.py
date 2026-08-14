@@ -155,8 +155,9 @@ with st.sidebar:
     elif status is not None:
         provider_label = "OPENAI" if selected_provider == "openai" else "OLLAMA"
         (st.success if status.available else st.warning)(
-            f"{provider_label} {'siap' if status.available else 'tidak tersedia'}: {status.model}"
+            f"{provider_label} {'terhubung' if status.available else 'tidak tersedia'}: {status.model}"
         )
+        st.caption(status.message)
         st.caption("Jika provider bermasalah, pindah ke LLM lain tanpa mengubah config/llm.conf.")
     with st.expander("Cara kerja", expanded=False):
         st.markdown(
@@ -248,6 +249,8 @@ for index, recommendation in enumerate(result["recommendations"], start=1):
 
 if result["ai_error"]:
     st.warning(f"Penjelasan model LLM tidak tersedia: {result['ai_error']}")
+    if selected_provider == "openai":
+        st.info("Pilih **Qwen Local** di sidebar dan jalankan analisis kembali untuk melanjutkan tanpa OpenAI API.")
 if result["ai_result"]:
     explanation = result["ai_result"]["explanation"]
     st.subheader(f"Penjelasan {result['ai_result']['model']}")
