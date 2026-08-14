@@ -151,8 +151,9 @@ with st.sidebar:
     elif llm_status is not None:
         st.caption(
             f"LLM interpretasi: {selected_provider.upper()} / {llm_status.model} "
-            f"({'siap' if llm_status.available else 'offline'})"
+            f"({'terhubung' if llm_status.available else 'tidak tersedia'})"
         )
+        st.caption(llm_status.message)
     st.caption(f"Model embedding: {config.embedding_provider.upper()} / {config.embedding_model}")
     with st.expander("Cara membaca hasil", expanded=False):
         st.markdown(
@@ -349,6 +350,8 @@ with st.expander("Dasar rekomendasi deterministik", expanded=False):
 
 if result["llm_error"]:
     st.warning("Rekomendasi LLM tidak tersedia, tetapi audit deterministik tetap selesai: " + result["llm_error"])
+    if result.get("llm_provider") == "openai":
+        st.info("Pilih **Qwen Local** di sidebar dan jalankan audit kembali untuk melanjutkan tanpa OpenAI API.")
 if result["embedding_error"]:
     st.warning("Audit deterministik selesai, tetapi relasi semantik tidak dapat dibuat: " + result["embedding_error"])
 
