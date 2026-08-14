@@ -30,6 +30,7 @@ jobs:
         if: steps.check.outputs.ready == 'true'
         shell: bash
         run: |
+          wc -c .bootstrap/part00 .bootstrap/gapA1 .bootstrap/gapA2 .bootstrap/part01 .bootstrap/gapB1 .bootstrap/gapB2 .bootstrap/rem* || true
           cat \
             .bootstrap/part00 \
             .bootstrap/gapA1 \
@@ -47,7 +48,9 @@ jobs:
             .bootstrap/rem07 \
             .bootstrap/rem08 \
             .bootstrap/rem09 > source.b64
-          base64 --decode source.b64 > source.zip
+          echo "Combined base64 bytes: $(wc -c < source.b64)"
+          base64 --decode --ignore-garbage source.b64 > source.zip
+          echo "Decoded ZIP bytes: $(wc -c < source.zip)"
           unzip -t source.zip
           unzip -o source.zip
           rm -rf .bootstrap source.b64 source.zip
