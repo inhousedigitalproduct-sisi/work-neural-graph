@@ -97,7 +97,7 @@ class OpenAIClient:
                     "json_schema": {
                         "name": schema_name,
                         "schema": response_model.model_json_schema(),
-                        "strict": True,
+                        "strict": False,
                     },
                 },
             )
