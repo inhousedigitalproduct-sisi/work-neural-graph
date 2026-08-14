@@ -1,19 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
 from src.analytics.service import AnalyticsService
-from src.llm.client import (
-    OllamaClient,
-    OllamaError,
-    OllamaMalformedResponseError,
-    OllamaStatus,
-)
+from src.llm.client import OllamaClient, OpenAIClient
 from src.llm.dispatcher import execute_intent
 from src.llm.models import AIExplanation, AnalysisIntent, AnalystResult, LLMMessage
-from src.llm.prompts import EXPLANATION_SYSTEM_PROMPT, EXPLANATION_PROMPT_VERSION, INTENT_PROMPT_VERSION, INTENT_SYSTEM_PROMPT
+from src.llm.prompts import EXPLANATION_SYSTEM_PROMPT, INTENT_SYSTEM_PROMPT
 
 
 @dataclass(frozen=True)
@@ -24,11 +20,11 @@ class ParsedIntentResult:
 
 
 class AIAnalystService:
-    def __init__(self, analytics_service: AnalyticsService, client: OllamaClient) -> None:
+    def __init__(self, analytics_service: AnalyticsService, client: OpenAIClient | OllamaClient) -> None:
         self.analytics_service = analytics_service
         self.client = client
 
-    def get_status(self) -> OllamaStatus:
+    def get_status(self):
         return self.client.healthcheck()
 
     def parse_intent(self, question: str, current_scope: dict) -> ParsedIntentResult:
@@ -78,7 +74,31 @@ class AIAnalystService:
         )
 
 
-def create_ai_analyst_service(db_path: Path, host: str, model: str, timeout_seconds: int) -> AIAnalystService:
+def create_ai_analyst_service(
+    db_path: Path,
+    provider: str,
+    model: str,
+    timeout_seconds: int,
+    api_key_env: str = "OPENAI_API_KEY",
+    ollama_host: str = "http://localhost:11434",
+) -> AIAnalystService:
     analytics_service = AnalyticsService(db_path)
-    client = OllamaClient(host=host, model=model, timeout_seconds=timeout_seconds)
+    provider_name = provider.strip().lower()
+
+    if provider_name == "openai":
+        client = OpenAIClient(
+            api_key=os.getenv(api_key_env),
+            model=model,
+            timeout_seconds=timeout_seconds,
+            api_key_env=api_key_env,
+        )
+    elif provider_name == "ollama":
+        client = OllamaClient(
+            host=ollama_host,
+            model=model,
+            timeout_seconds=timeout_seconds,
+        )
+    else:
+        raise ValueError(f"Unsupported LLM provider: {provider}")
+
     return AIAnalystService(analytics_service=analytics_service, client=client)
