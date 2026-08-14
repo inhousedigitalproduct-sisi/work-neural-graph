@@ -6,6 +6,7 @@ import streamlit as st
 from src.domain.models import DatasetSummary
 from src.domain.models import GraphStrategy
 from src.graph.builder import GraphFilterConfig
+from src.utils.config import AppConfig
 
 
 DATASET_STATE_PREFIXES = (
@@ -17,6 +18,9 @@ DATASET_STATE_PREFIXES = (
     "ai_analyst_",
     "quality_audit_",
 )
+
+LLM_PROVIDER_STATE_KEY = "llm_runtime_provider"
+LLM_PROVIDER_OPTIONS = ("openai", "ollama", "off")
 
 
 def clear_dataset_dependent_state() -> None:
@@ -100,6 +104,45 @@ def render_analytics_summary(
     col7.metric("Interrupted Tasks", f"{interrupted_tasks}")
     col8.metric("Avg Context Switches", f"{average_context_switches:.2f}")
     col9.metric("Avg Continuity", f"{average_continuity_ratio:.2f}")
+
+
+def render_llm_provider_selector(config: AppConfig) -> str:
+    """Render one global per-session LLM selector shared across AI-enabled pages."""
+    default_provider = config.llm_default_provider if config.llm_enabled else "off"
+    if default_provider not in LLM_PROVIDER_OPTIONS:
+        default_provider = "openai"
+
+    current_provider = st.session_state.get(LLM_PROVIDER_STATE_KEY)
+    if current_provider not in LLM_PROVIDER_OPTIONS:
+        st.session_state[LLM_PROVIDER_STATE_KEY] = default_provider
+
+    with st.sidebar:
+        st.divider()
+        st.subheader("AI Interpretation")
+        selected_provider = st.radio(
+            "LLM",
+            LLM_PROVIDER_OPTIONS,
+            key=LLM_PROVIDER_STATE_KEY,
+            horizontal=True,
+            format_func=lambda value: {
+                "openai": "OpenAI",
+                "ollama": "Qwen Local",
+                "off": "Off",
+            }[value],
+            help=(
+                "Pilihan ini berlaku selama sesi Streamlit dan dipakai bersama oleh halaman AI Analyst dan Audit Kualitas. "
+                "Mengubah pilihan tidak mengubah file config/llm.conf."
+            ),
+        )
+
+        if selected_provider == "off":
+            st.caption("Narasi AI nonaktif; analytics Python tetap berjalan.")
+        else:
+            profile = config.llm_profile(selected_provider)
+            provider_label = "OpenAI" if selected_provider == "openai" else "Ollama"
+            st.caption(f"{provider_label}: {profile.model}")
+
+    return selected_provider
 
 
 def render_shared_filters(
