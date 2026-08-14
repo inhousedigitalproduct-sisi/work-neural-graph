@@ -7,7 +7,7 @@ import streamlit as st
 
 from src.analytics.service import AnalyticsService
 from src.domain.models import GraphStrategy
-from src.llm.client import OllamaError, OllamaMalformedResponseError
+from src.llm.client import LLMError
 from src.llm.service import create_ai_analyst_service
 from src.services import TimesheetDataService
 from src.ui.components import render_shared_filters
@@ -17,10 +17,12 @@ config = get_config()
 analytics_service = AnalyticsService(config.db_path)
 dataset_service = TimesheetDataService(config.db_path)
 ai_service = create_ai_analyst_service(
-    config.db_path,
-    config.ollama_host,
-    config.ollama_model,
-    config.ollama_timeout_seconds,
+    db_path=config.db_path,
+    provider=config.llm_provider,
+    model=config.llm_model,
+    timeout_seconds=config.llm_timeout_seconds,
+    api_key_env=config.llm_api_key_env,
+    ollama_host=config.ollama_host,
 )
 
 
@@ -127,7 +129,7 @@ def build_recommendations(snapshot) -> list[str]:
 
 
 st.title("AI Analyst")
-st.caption("Ringkasan manajerial berbasis data timesheet aktif. Python menghitung fakta; Qwen hanya menjelaskan hasil.")
+st.caption("Ringkasan manajerial berbasis data timesheet aktif. Python menghitung fakta; model LLM hanya menjelaskan hasil.")
 
 source_dataframe = dataset_service.load_active_dataset()
 if source_dataframe.empty:
@@ -139,29 +141,32 @@ if source_dataframe.empty:
 filters, _ = render_shared_filters(source_dataframe)
 current_filter_signature = filter_signature(filters)
 status = ai_service.get_status()
+provider_label = config.llm_provider.upper()
 with st.sidebar:
     st.divider()
-    st.subheader("Status analisis lokal")
-    (st.success if status.available else st.warning)(f"Qwen {'siap' if status.available else 'tidak tersedia'}: {status.model}")
-    st.caption("Ringkasan dasar tetap bisa dijalankan saat Qwen offline.")
+    st.subheader("Status AI Analyst")
+    (st.success if status.available else st.warning)(
+        f"{provider_label} {'siap' if status.available else 'tidak tersedia'}: {status.model}"
+    )
+    st.caption("Ringkasan dasar tetap bisa dijalankan saat model LLM tidak tersedia.")
     with st.expander("Cara kerja", expanded=False):
         st.markdown(
             "1. Memakai data dari Load Data.  \n"
             "2. Menerapkan filter.  \n"
             "3. Menghitung metrik secara deterministik.  \n"
             "4. Menyusun ringkasan dan rekomendasi.  \n"
-            "5. Jika tersedia, Qwen menjelaskan hasil tanpa mengubah angka."
+            "5. Jika tersedia, model LLM menjelaskan hasil tanpa mengubah angka."
         )
 
 question = st.text_area(
-    "Pertanyaan untuk Qwen",
+    "Pertanyaan untuk AI",
     placeholder="Contoh: pola kerja mana yang perlu saya review terlebih dahulu?",
     height=82,
 )
-use_qwen = st.checkbox(
-    "Buat narasi manajerial dengan Qwen",
-    value=True,
-    help="Qwen menjelaskan ringkasan data yang sudah dihitung Python. Ia tidak menentukan atau mengubah angka.",
+use_llm = st.checkbox(
+    "Buat narasi manajerial dengan model LLM",
+    value=config.llm_enabled,
+    help="Model LLM menjelaskan ringkasan data yang sudah dihitung Python. Model tidak menentukan atau mengubah angka.",
 )
 
 if st.button("Jalankan analisis", type="primary"):
@@ -173,7 +178,7 @@ if st.button("Jalankan analisis", type="primary"):
         recommendations = build_recommendations(snapshot)
         st.write("Tahap 4/5 — Menyusun ringkasan dan rekomendasi berbasis data.")
         ai_result, ai_error = None, None
-        if use_qwen and status.available:
+        if use_llm and status.available:
             try:
                 effective_question = question.strip() or (
                     "Berikan ringkasan eksekutif atas pola timesheet pada filter aktif. Jelaskan sinyal utama, hal yang perlu "
@@ -185,12 +190,12 @@ if st.button("Jalankan analisis", type="primary"):
                     result_payload=brief,
                 )
                 ai_result = {"explanation": explanation, "payload": brief, "duration": duration}
-                st.write(f"Tahap 5/5 — Qwen menyiapkan narasi manajerial ({duration:.1f} detik).")
-            except (OllamaError, OllamaMalformedResponseError, ValueError) as exc:
+                st.write(f"Tahap 5/5 — {status.model} menyiapkan narasi manajerial ({duration:.1f} detik).")
+            except (LLMError, ValueError) as exc:
                 ai_error = str(exc)
-                st.write("Tahap 5/5 — Penjelasan Qwen tidak tersedia; ringkasan deterministik tetap selesai.")
+                st.write("Tahap 5/5 — Penjelasan model LLM tidak tersedia; ringkasan deterministik tetap selesai.")
         else:
-            st.write("Tahap 5/5 — Narasi Qwen dilewati (dinonaktifkan atau model offline).")
+            st.write("Tahap 5/5 — Narasi model LLM dilewati (dinonaktifkan atau provider tidak tersedia).")
         progress.update(label="Analisis selesai", state="complete", expanded=False)
     st.session_state["ai_analyst_result"] = {
         "snapshot": snapshot,
@@ -232,10 +237,10 @@ for index, recommendation in enumerate(result["recommendations"], start=1):
     st.write(f"{index}. {recommendation}")
 
 if result["ai_error"]:
-    st.warning(f"Penjelasan Qwen tidak tersedia: {result['ai_error']}")
+    st.warning(f"Penjelasan model LLM tidak tersedia: {result['ai_error']}")
 if result["ai_result"]:
     explanation = result["ai_result"]["explanation"]
-    st.subheader("Penjelasan Qwen")
+    st.subheader(f"Penjelasan {status.model}")
     st.write(explanation.summary)
     for heading, items in (
         ("Sinyal utama dari data", explanation.observations),
@@ -326,5 +331,8 @@ with tabs[2]:
     st.json(build_scope_payload(snapshot, filters)["filters"])
 
 with st.expander("Detail teknis untuk pengembangan", expanded=False):
+    st.caption(
+        f"LLM provider: {config.llm_provider} | model: {config.llm_model} | config: {config.llm_config_path}"
+    )
     if result["ai_result"]:
         st.code(json.dumps(result["ai_result"]["payload"], indent=2, ensure_ascii=False), language="json")
