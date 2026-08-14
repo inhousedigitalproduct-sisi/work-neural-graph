@@ -3,3 +3,9 @@
 __pycache__/
 .pytest_cache/
 data/*.db
+
+# Local secrets and environment files
+.env
+.env.*
+!.env.example
+config/*.local.conf
