@@ -6,12 +6,119 @@ from dataclasses import dataclass
 from time import perf_counter
 from urllib import error, request
 
+from openai import OpenAI, OpenAIError
 from pydantic import BaseModel, ValidationError
 
 from src.llm.models import LLMMessage
 
 
-class OllamaError(RuntimeError):
+class LLMError(RuntimeError):
+    pass
+
+
+class LLMUnavailableError(LLMError):
+    pass
+
+
+class LLMMalformedResponseError(LLMError):
+    pass
+
+
+@dataclass(frozen=True)
+class LLMStatus:
+    available: bool
+    provider: str
+    model: str
+    message: str
+
+
+@dataclass(frozen=True)
+class StructuredChatResult:
+    parsed: BaseModel
+    raw_content: str
+    duration_seconds: float
+
+
+class OpenAIClient:
+    def __init__(
+        self,
+        api_key: str | None,
+        model: str,
+        timeout_seconds: int = 180,
+        api_key_env: str = "OPENAI_API_KEY",
+    ) -> None:
+        self.model = model
+        self.timeout_seconds = timeout_seconds
+        self.api_key_env = api_key_env
+        self._client = OpenAI(api_key=api_key, timeout=timeout_seconds) if api_key else None
+
+    def healthcheck(self) -> LLMStatus:
+        if self._client is None:
+            return LLMStatus(
+                available=False,
+                provider="openai",
+                model=self.model,
+                message=f"Environment variable '{self.api_key_env}' is not set.",
+            )
+        try:
+            self._client.models.retrieve(self.model)
+        except OpenAIError as exc:
+            return LLMStatus(
+                available=False,
+                provider="openai",
+                model=self.model,
+                message=f"OpenAI API or configured model is unavailable ({exc.__class__.__name__}).",
+            )
+        return LLMStatus(
+            available=True,
+            provider="openai",
+            model=self.model,
+            message="OpenAI API is available.",
+        )
+
+    def structured_chat(
+        self,
+        messages: list[LLMMessage],
+        response_model: type[BaseModel],
+        temperature: float = 0.0,
+    ) -> StructuredChatResult:
+        del temperature  # Keep a provider-compatible interface; GPT-5 uses provider defaults here.
+        if self._client is None:
+            raise LLMUnavailableError(f"Environment variable '{self.api_key_env}' is not set.")
+
+        schema_name = response_model.__name__[:64]
+        started = perf_counter()
+        try:
+            response = self._client.chat.completions.create(
+                model=self.model,
+                messages=[message.model_dump() for message in messages],
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": schema_name,
+                        "schema": response_model.model_json_schema(),
+                        "strict": True,
+                    },
+                },
+            )
+        except OpenAIError as exc:
+            raise LLMUnavailableError(f"OpenAI request failed ({exc.__class__.__name__}).") from exc
+        duration = perf_counter() - started
+
+        try:
+            raw_content = response.choices[0].message.content
+        except (AttributeError, IndexError, TypeError) as exc:
+            raise LLMMalformedResponseError("OpenAI response did not contain structured text content.") from exc
+        if not isinstance(raw_content, str) or not raw_content.strip():
+            raise LLMMalformedResponseError("OpenAI response did not contain structured text content.")
+        try:
+            parsed = response_model.model_validate_json(raw_content)
+        except ValidationError as exc:
+            raise LLMMalformedResponseError("OpenAI returned invalid structured JSON.") from exc
+        return StructuredChatResult(parsed=parsed, raw_content=raw_content, duration_seconds=duration)
+
+
+class OllamaError(LLMError):
     pass
 
 
@@ -38,13 +145,6 @@ class OllamaStatus:
     model: str
     message: str
     installed_models: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class StructuredChatResult:
-    parsed: BaseModel
-    raw_content: str
-    duration_seconds: float
 
 
 class OllamaClient:
