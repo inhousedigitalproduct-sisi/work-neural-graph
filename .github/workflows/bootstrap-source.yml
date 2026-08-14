@@ -20,7 +20,7 @@ jobs:
         id: check
         shell: bash
         run: |
-          if [ -f .bootstrap/part00 ] && [ -f .bootstrap/part01 ] && [ -f .bootstrap/gapA1 ] && [ -f .bootstrap/gapA2 ] && [ -f .bootstrap/gapB1 ] && [ -f .bootstrap/gapB2 ] && [ -f .bootstrap/fixA ] && [ -f .bootstrap/fixB ] && [ -f .bootstrap/rem09 ]; then
+          if [ -f .bootstrap/part00 ] && [ -f .bootstrap/a1a ] && [ -f .bootstrap/a1b ] && [ -f .bootstrap/fixA ] && [ -f .bootstrap/gapA2 ] && [ -f .bootstrap/part01 ] && [ -f .bootstrap/gapB1 ] && [ -f .bootstrap/b2a ] && [ -f .bootstrap/b2b ] && [ -f .bootstrap/fixB ] && [ -f .bootstrap/rem09 ]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
@@ -30,15 +30,16 @@ jobs:
         if: steps.check.outputs.ready == 'true'
         shell: bash
         run: |
-          sha256sum .bootstrap/part00 .bootstrap/gapA1 .bootstrap/fixA .bootstrap/gapA2 .bootstrap/part01 .bootstrap/gapB1 .bootstrap/gapB2 .bootstrap/fixB .bootstrap/rem00 .bootstrap/rem01 .bootstrap/rem02 .bootstrap/rem03 .bootstrap/rem04 .bootstrap/rem05 .bootstrap/rem06 .bootstrap/rem07 .bootstrap/rem08 .bootstrap/rem09
           cat \
             .bootstrap/part00 \
-            .bootstrap/gapA1 \
+            .bootstrap/a1a \
+            .bootstrap/a1b \
             .bootstrap/fixA \
             .bootstrap/gapA2 \
             .bootstrap/part01 \
             .bootstrap/gapB1 \
-            .bootstrap/gapB2 \
+            .bootstrap/b2a \
+            .bootstrap/b2b \
             .bootstrap/fixB \
             .bootstrap/rem00 \
             .bootstrap/rem01 \
