@@ -8,10 +8,15 @@ import streamlit as st
 from src.analytics.service import AnalyticsService
 from src.domain.models import GraphStrategy
 from src.graph.visualizer import build_graph_figure
-from src.llm.client import OllamaError, OllamaMalformedResponseError
+from src.llm.client import LLMError
 from src.llm.service import create_ai_analyst_service
 from src.services import GraphService, TimesheetDataService
-from src.ui.components import render_analytics_summary, render_graph_summary, render_shared_filters
+from src.ui.components import (
+    render_analytics_summary,
+    render_graph_summary,
+    render_llm_provider_selector,
+    render_shared_filters,
+)
 from src.utils.config import get_config
 
 logger = logging.getLogger(__name__)
@@ -20,7 +25,6 @@ config = get_config()
 service = GraphService(config.db_path)
 analytics_service = AnalyticsService(config.db_path)
 dataset_service = TimesheetDataService(config.db_path)
-ai_service = create_ai_analyst_service(config.db_path, config.ollama_host, config.ollama_model, config.ollama_timeout_seconds)
 
 
 def build_graph_llm_brief(graph_result, analytics_snapshot) -> dict:
@@ -74,6 +78,20 @@ if source_dataframe.empty:
 source_dataframe["work_date"] = pd.to_datetime(source_dataframe["work_date"])
 
 filters, selected_strategy = render_shared_filters(source_dataframe, include_strategy=True)
+selected_provider = render_llm_provider_selector(config)
+selected_profile = config.llm_profile(selected_provider) if selected_provider != "off" else None
+ai_service = None
+llm_status = None
+if selected_profile is not None:
+    ai_service = create_ai_analyst_service(
+        db_path=config.db_path,
+        provider=selected_profile.provider,
+        model=selected_profile.model,
+        timeout_seconds=config.llm_timeout_seconds,
+        api_key_env=selected_profile.api_key_env or config.openai_api_key_env,
+        ollama_host=selected_profile.host or config.ollama_host,
+    )
+    llm_status = ai_service.get_status()
 
 with st.sidebar:
     st.divider()
@@ -221,12 +239,31 @@ st.info(
 st.plotly_chart(figure, use_container_width=True)
 
 st.subheader("Interpretasi manajerial")
-st.caption(
-    "Qwen membaca fakta yang sudah dihitung Python lalu menyusunnya menjadi ringkasan eksekutif. "
-    "Fokusnya adalah pola kerja, area perhatian, dan bahan diskusi manajemen—bukan penilaian performa individu."
+if selected_provider == "off":
+    st.caption("AI Interpretation sedang Off. Grafik dan seluruh metrik Python tetap tersedia.")
+else:
+    provider_label = "OpenAI" if selected_provider == "openai" else "Qwen Local"
+    model_label = llm_status.model if llm_status is not None else selected_profile.model
+    st.caption(
+        f"{provider_label} / {model_label} membaca fakta yang sudah dihitung Python lalu menyusunnya menjadi ringkasan eksekutif. "
+        "Fokusnya adalah pola kerja, area perhatian, dan bahan diskusi manajemen—bukan penilaian performa individu."
+    )
+
+interpretation_available = (
+    selected_provider != "off"
+    and ai_service is not None
+    and llm_status is not None
+    and llm_status.available
 )
-if st.button("Buat interpretasi grafik dengan Qwen", disabled=not ai_service.get_status().available):
-    with st.status("Qwen sedang menafsirkan pola grafik…", expanded=True) as qwen_status:
+button_label = "Buat interpretasi grafik"
+if selected_provider == "openai":
+    button_label += " dengan OpenAI"
+elif selected_provider == "ollama":
+    button_label += " dengan Qwen Local"
+
+if st.button(button_label, disabled=not interpretation_available):
+    model_label = llm_status.model
+    with st.status(f"{model_label} sedang menafsirkan pola grafik…", expanded=True) as llm_progress:
         try:
             brief = build_graph_llm_brief(result, analytics_snapshot)
             explanation, duration, _ = ai_service.explain_result(
@@ -238,27 +275,38 @@ if st.button("Buat interpretasi grafik dengan Qwen", disabled=not ai_service.get
                 ),
                 result_payload=brief,
             )
-            st.session_state["neural_graph_qwen_result"] = explanation
-            st.session_state.pop("neural_graph_qwen_error", None)
-            qwen_status.update(label=f"Interpretasi Qwen selesai ({duration:.1f} detik)", state="complete", expanded=False)
-        except (OllamaError, OllamaMalformedResponseError, ValueError) as exc:
-            st.session_state["neural_graph_qwen_error"] = str(exc)
-            qwen_status.update(label="Interpretasi Qwen tidak tersedia", state="error", expanded=False)
+            st.session_state["neural_graph_llm_result"] = {
+                "explanation": explanation,
+                "provider": selected_provider,
+                "model": model_label,
+            }
+            st.session_state.pop("neural_graph_llm_error", None)
+            llm_progress.update(
+                label=f"Interpretasi {model_label} selesai ({duration:.1f} detik)",
+                state="complete",
+                expanded=False,
+            )
+        except (LLMError, ValueError) as exc:
+            st.session_state["neural_graph_llm_error"] = str(exc)
+            llm_progress.update(label="Interpretasi LLM tidak tersedia", state="error", expanded=False)
 
-if st.session_state.get("neural_graph_qwen_error"):
-    st.warning("Interpretasi Qwen tidak tersedia: " + st.session_state["neural_graph_qwen_error"])
-if st.session_state.get("neural_graph_qwen_result"):
-    explanation = st.session_state["neural_graph_qwen_result"]
-    st.write(explanation.summary)
-    for heading, items in (
-        ("Sinyal utama dari data", explanation.observations),
-        ("Perlu tanggapan / diskusi manajemen", explanation.risks_or_attention_points),
-        ("Pertanyaan untuk verifikasi lanjutan", explanation.recommended_investigation),
-    ):
-        if items:
-            st.markdown(f"**{heading}**")
-            for item in items:
-                st.write(f"- {item}")
+if st.session_state.get("neural_graph_llm_error"):
+    st.warning("Interpretasi LLM tidak tersedia: " + st.session_state["neural_graph_llm_error"])
+if st.session_state.get("neural_graph_llm_result"):
+    llm_result = st.session_state["neural_graph_llm_result"]
+    if llm_result.get("provider") == selected_provider:
+        explanation = llm_result["explanation"]
+        st.caption(f"Hasil interpretasi: {llm_result['model']}")
+        st.write(explanation.summary)
+        for heading, items in (
+            ("Sinyal utama dari data", explanation.observations),
+            ("Perlu tanggapan / diskusi manajemen", explanation.risks_or_attention_points),
+            ("Pertanyaan untuk verifikasi lanjutan", explanation.recommended_investigation),
+        ):
+            if items:
+                st.markdown(f"**{heading}**")
+                for item in items:
+                    st.write(f"- {item}")
 
 with st.expander("Edge Details", expanded=False):
     edge_details = display_edge_dataframe.copy()
@@ -274,4 +322,5 @@ with st.expander("Node Details", expanded=False):
     st.dataframe(node_details, use_container_width=True)
 
 with st.expander("Developer Details", expanded=False):
+    st.caption(f"LLM selection: {selected_provider}")
     st.json(dataset_service.get_data_source_debug())
