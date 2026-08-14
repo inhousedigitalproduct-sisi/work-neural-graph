@@ -72,7 +72,7 @@ pip install -r requirements.txt
 ## Run Tests
 
 ```bash
-pytest
+python -m pytest
 ```
 
 ## Run the App
@@ -128,7 +128,7 @@ Fragmentation score formula:
 fragmentation_score = continuation_count + total_interruption_days
 ```
 
-Example for dates `2026-08-01`, `2026-08-03`, `2026-08-07`:
+Example for dates `2026-08-01`, `2026-08-03`, and `2026-08-07`:
 
 - date gaps = `2`, `4`
 - interruption days = `1`, `3`
