@@ -79,7 +79,16 @@ with st.sidebar:
     min_shared_tasks = 1
     if not result.edge_dataframe.empty:
         maximum = int(result.edge_dataframe["shared_task_count"].max())
-        min_shared_tasks = st.slider("Minimum task bersama", 1, maximum, 1, key="neural_graph_min_shared_tasks")
+        if maximum > 1:
+            min_shared_tasks = st.slider(
+                "Minimum task bersama",
+                min_value=1,
+                max_value=maximum,
+                value=1,
+                key="neural_graph_min_shared_tasks",
+            )
+        else:
+            st.caption("Minimum task bersama: 1 (semua relasi hanya memiliki 1 task bersama)")
 
 edges = result.edge_dataframe
 if not edges.empty:
