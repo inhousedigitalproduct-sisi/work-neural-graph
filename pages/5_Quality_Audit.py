@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import io
-
 import pandas as pd
 import streamlit as st
 
-from src.llm.client import LLMError
-from src.llm.service import create_ai_analyst_service
+from src.graph.builder import apply_graph_filters
 from src.quality.timesheet_quality import (
     build_topic_summary,
     cluster_vectors,
@@ -20,20 +17,14 @@ from src.quality.timesheet_quality import (
     semantic_pairs,
 )
 from src.services import TimesheetDataService
-from src.ui.components import render_llm_provider_selector, render_shared_filters
+from src.ui.components import render_shared_filters
 from src.utils.config import get_config
 
 config = get_config()
 dataset_service = TimesheetDataService(config.db_path)
 
 
-def audit_signature(
-    filters,
-    fuzzy_threshold: float,
-    semantic_threshold: float,
-    use_embeddings: bool,
-    llm_provider: str,
-) -> tuple:
+def deterministic_signature(filters, fuzzy_threshold: float) -> tuple:
     return (
         filters.start_date,
         filters.end_date,
@@ -43,213 +34,56 @@ def audit_signature(
         tuple(filters.states),
         filters.note_keyword,
         round(float(fuzzy_threshold), 4),
-        round(float(semantic_threshold), 4),
-        bool(use_embeddings),
-        llm_provider,
     )
 
 
-def build_quality_llm_brief(
-    kpis: dict,
-    entries: pd.DataFrame,
-    copies: pd.DataFrame,
-    overlaps: pd.DataFrame,
-    repeated: pd.DataFrame,
-    topics: pd.DataFrame,
-) -> dict:
-    category_counts = entries["Kategori"].value_counts().to_dict() if not entries.empty else {}
-    copy_types = copies["Jenis"].value_counts().to_dict() if not copies.empty and "Jenis" in copies.columns else {}
-    repeated_brief = repeated.head(5)[
-        [
-            column
-            for column in ["Aktivitas", "Jumlah pengulangan", "Total jam", "Cenderung lama"]
-            if column in repeated.columns
-        ]
-    ].to_dict(orient="records") if not repeated.empty else []
-    topic_brief = topics.head(5)[
-        [
-            column
-            for column in ["Tema representatif", "Jumlah entri", "Total jam"]
-            if column in topics.columns
-        ]
-    ].to_dict(orient="records") if not topics.empty else []
-    return {
-        "scope_kpi": kpis,
-        "writing_categories": category_counts,
-        "copy_pair_count": int(len(copies)),
-        "copy_pair_types": copy_types,
-        "overlap_pair_count": int(len(overlaps)),
-        "repeated_activity_examples": repeated_brief,
-        "semantic_topic_examples": topic_brief,
-        "interpretation_guidance": {
-            "audience": "management",
-            "goal": "prioritize policy/process discussion and validation, not employee performance judgement",
-            "note": "all figures are deterministic Python outputs; do not invent new numbers",
-        },
-    }
-
-
-def display_deterministic_recommendations(recommendations: list[str]) -> None:
-    for number, recommendation in enumerate(recommendations, start=1):
-        st.write(f"{number}. {recommendation}")
+def semantic_signature(base_signature: tuple, semantic_threshold: float) -> tuple:
+    return (*base_signature, round(float(semantic_threshold), 4), config.embedding_model)
 
 
 st.title("Audit Kualitas Timesheet")
-st.caption(
-    "Mengaudit kualitas pencatatan timesheet dari dataset aktif: copy/near-copy, kualitas Note, pengulangan, durasi, overlap, dan relasi semantik."
-)
+st.caption("Audit Python ditampilkan lebih dulu. Analisis semantik dan topic grouping dijalankan terpisah hanya saat dibutuhkan.")
 
 source_dataframe = dataset_service.load_active_dataset()
 if source_dataframe.empty:
-    st.info("Belum ada dataset aktif. Unggah file timesheet terlebih dahulu melalui halaman Load Data.")
-    if st.button("Buka Load Data"):
-        st.switch_page("pages/1_Load_Data.py")
+    st.info("Belum ada dataset aktif. Unggah file timesheet melalui halaman Load Data.")
     st.stop()
 
 filters, _ = render_shared_filters(source_dataframe)
-selected_provider = render_llm_provider_selector(config)
-selected_profile = config.llm_profile(selected_provider) if selected_provider != "off" else None
-ai_service = None
-llm_status = None
-if selected_profile is not None:
-    ai_service = create_ai_analyst_service(
-        db_path=config.db_path,
-        provider=selected_profile.provider,
-        model=selected_profile.model,
-        timeout_seconds=config.llm_timeout_seconds,
-        api_key_env=selected_profile.api_key_env or config.openai_api_key_env,
-        ollama_host=selected_profile.host or config.ollama_host,
-    )
-    llm_status = ai_service.get_status()
-
 with st.sidebar:
     st.divider()
     st.subheader("Pengaturan audit")
-    fuzzy_threshold = st.slider(
-        "Ambang near-copy",
-        0.70,
-        1.00,
-        0.90,
-        0.01,
-        help="Makin tinggi nilainya, makin mirip Note yang diperlukan untuk dianggap near-copy.",
-    )
-    semantic_threshold = st.slider(
-        "Ambang relasi semantik",
-        0.60,
-        0.95,
-        0.82,
-        0.01,
-        help="Makin tinggi nilainya, makin dekat makna dua entri yang diperlukan agar dihubungkan.",
-    )
-    use_embeddings = st.toggle(
-        "Analisis relasi semantik",
-        value=config.embedding_enabled,
-        help="Menggunakan model embedding Ollama dan dapat membutuhkan waktu lebih lama.",
-    )
-    if selected_provider == "off":
-        st.caption("LLM interpretasi: Off")
-    elif llm_status is not None:
-        st.caption(
-            f"LLM interpretasi: {selected_provider.upper()} / {llm_status.model} "
-            f"({'terhubung' if llm_status.available else 'tidak tersedia'})"
-        )
-        st.caption(llm_status.message)
-    st.caption(f"Model embedding: {config.embedding_provider.upper()} / {config.embedding_model}")
-    with st.expander("Cara membaca hasil", expanded=False):
-        st.markdown(
-            "- **Copy/near-copy**: Note identik atau hampir sama milik pegawai yang sama; perlu verifikasi, bukan otomatis kesalahan.  \n"
-            "- **Kualitas Note**: proxy kelengkapan aksi, objek, hasil, dan konteks.  \n"
-            "- **Overlap**: dua rentang waktu milik pegawai yang sama saling bertumpang tindih; perlu konfirmasi konteks.  \n"
-            "- **Relasi semantik**: dua entri bermakna dekat berdasarkan embedding; bukan bukti duplikasi.  \n"
-            "- **Efektivitas**: proxy kualitas pencatatan, bukan nilai produktivitas atau kualitas hasil kerja."
-        )
+    fuzzy_threshold = st.slider("Ambang near-copy", 0.70, 1.00, 0.90, 0.01)
+    semantic_threshold = st.slider("Ambang relasi semantik", 0.60, 0.95, 0.82, 0.01)
+    st.caption(f"Embedding: {config.embedding_provider.upper()} / {config.embedding_model}")
 
-current_audit_signature = audit_signature(
-    filters,
-    fuzzy_threshold,
-    semantic_threshold,
-    use_embeddings,
-    selected_provider,
-)
+current_signature = deterministic_signature(filters, fuzzy_threshold)
 
 if st.button("Jalankan audit kualitas", type="primary"):
-    from src.graph.builder import apply_graph_filters
-
     filtered = prepare_quality_dataframe(apply_graph_filters(source_dataframe, filters))
     if filtered.empty:
         st.warning("Filter saat ini tidak menghasilkan entri untuk dianalisis.")
         st.stop()
 
-    with st.status("Menjalankan audit kualitas…", expanded=True) as progress_status:
+    with st.status("Menjalankan audit Python…", expanded=True) as status:
         activity = st.empty()
-        progress = st.progress(0, text="Menyiapkan audit")
-
-        activity.info("Tahap 1/6 — Memvalidasi durasi dan waktu kerja.")
+        progress = st.progress(0.0, text="Menyiapkan audit")
+        activity.info("1/3 — Validasi durasi dan waktu kerja")
         duration = find_duration_issues(filtered)
+        progress.progress(0.20, text="Validasi durasi selesai")
 
-        activity.info("Tahap 2/6 — Mendeteksi exact copy dan near-copy pada Note.")
+        activity.info("2/3 — Deteksi exact copy dan near-copy")
         copies = find_copy_pairs(
             filtered,
             fuzzy_threshold,
-            lambda done, total: progress.progress(
-                done / total if total else 1,
-                text=f"Fuzzy matching: {done:,} / {total:,} pasangan",
-            ),
+            lambda done, total: progress.progress(0.20 + 0.55 * (done / total if total else 1), text=f"Fuzzy matching: {done:,}/{total:,}"),
         )
 
-        activity.info("Tahap 3/6 — Memeriksa overlap waktu dan aktivitas berulang.")
+        activity.info("3/3 — Overlap, kualitas tulisan, dan aktivitas berulang")
         overlaps = find_overlap_pairs(filtered)
-        kpis, entry_scores, repeated, deterministic_recommendations = managerial_summary(
-            filtered,
-            copies,
-            overlaps,
-            duration,
-        )
-
-        semantic_raw = pd.DataFrame()
-        semantic = pd.DataFrame()
-        topics = pd.DataFrame()
-        embedding_error = None
-        if use_embeddings:
-            activity.info("Tahap 4/6 — Membuat embedding lokal, relasi semantik, dan kelompok topik.")
-            try:
-                vectors = embed_texts(
-                    filtered["analysis_text"].tolist(),
-                    config.ollama_host,
-                    config.embedding_model,
-                    lambda done, total: progress.progress(
-                        done / total if total else 1,
-                        text=f"Embedding: {done:,} / {total:,} entri",
-                    ),
-                )
-                semantic_raw = semantic_pairs(vectors, filtered["row_id"].tolist(), semantic_threshold)
-                semantic = enrich_semantic_pairs(semantic_raw, filtered)
-                filtered["Topic Group"] = cluster_vectors(vectors, semantic_threshold)
-                topics = build_topic_summary(filtered)
-            except Exception as exc:  # Embedding/model failures must not hide deterministic results.
-                embedding_error = str(exc)
-
-        quality_llm = None
-        llm_error = None
-        activity.info("Tahap 5/6 — Menyusun rekomendasi high-level untuk manajemen.")
-        if ai_service is not None and llm_status is not None and llm_status.available:
-            try:
-                brief = build_quality_llm_brief(kpis, entry_scores, copies, overlaps, repeated, topics)
-                quality_llm, _duration, _ = ai_service.explain_result(
-                    question=(
-                        "Buat rekomendasi high-level untuk manajemen berdasarkan audit kualitas timesheet ini. "
-                        "Ringkas implikasi proses/kebijakan, sebutkan hal yang perlu didiskusikan manajemen, dan berikan pertanyaan "
-                        "investigasi lanjutan. Gunakan hanya fakta pada payload, jangan menciptakan angka, dan jangan menilai performa individu. "
-                        "Prioritaskan perbaikan standar pencatatan, governance review, kategorisasi pekerjaan, dan validasi data yang paling relevan."
-                    ),
-                    result_payload=brief,
-                )
-            except (LLMError, ValueError) as exc:
-                llm_error = str(exc)
-
-        activity.info("Tahap 6/6 — Menyiapkan tabel bukti dan ringkasan akhir.")
-        progress.progress(1.0, text="Audit selesai")
-        progress_status.update(label="Audit kualitas selesai", state="complete", expanded=False)
+        kpis, entry_scores, repeated, _ = managerial_summary(filtered, copies, overlaps, duration)
+        progress.progress(1.0, text="Audit Python selesai")
+        status.update(label="Audit Python selesai", state="complete", expanded=False)
 
     st.session_state["quality_audit_result"] = {
         "filtered": filtered,
@@ -259,234 +93,106 @@ if st.button("Jalankan audit kualitas", type="primary"):
         "overlaps": overlaps,
         "duration": duration,
         "repeated": repeated,
-        "semantic": semantic,
-        "semantic_raw": semantic_raw,
-        "topics": topics,
-        "recommendations": deterministic_recommendations,
-        "quality_llm": quality_llm,
-        "llm_error": llm_error,
-        "embedding_error": embedding_error,
-        "audit_signature": current_audit_signature,
-        "llm_provider": selected_provider,
-        "llm_model": llm_status.model if llm_status is not None else None,
+        "signature": current_signature,
     }
+    st.session_state.pop("quality_semantic_result", None)
 
 result = st.session_state.get("quality_audit_result")
 if result is None:
-    st.info("Pilih filter, pengaturan audit, dan LLM bila diperlukan, lalu tekan **Jalankan audit kualitas**.")
+    st.info("Pilih filter lalu tekan **Jalankan audit kualitas**. Analisis semantik tidak akan memperlambat proses awal.")
     st.stop()
-if result.get("audit_signature") != current_audit_signature:
-    st.info(
-        "Filter, pengaturan audit, atau pilihan LLM berubah sejak proses terakhir. Jalankan audit kembali agar seluruh temuan dan rekomendasi mengikuti scope aktif."
-    )
+if result.get("signature") != current_signature:
+    st.info("Filter atau ambang near-copy berubah. Jalankan audit kualitas kembali agar hasil mengikuti scope aktif.")
     st.stop()
 
 kpis = result["kpis"]
-st.subheader("Ringkasan manajerial")
+st.subheader("Ringkasan audit")
 a, b, c, d = st.columns(4)
-a.metric(
-    "Indikasi copy-paste",
-    f"{kpis['copy']} / {kpis['total']}",
-    f"{kpis['copy_rate']}%",
-    help=(
-        "Jumlah entri unik yang terlibat minimal satu pasangan exact-copy atau near-copy pada pegawai yang sama, dibanding total entri filter aktif. "
-        "Ini adalah sinyal verifikasi kualitas Note, bukan otomatis kesalahan."
-    ),
+a.metric("Indikasi copy-paste", f"{kpis['copy']} / {kpis['total']}", f"{kpis['copy_rate']}%")
+b.metric("Kualitas penulisan", f"{kpis['writing']} / 100")
+c.metric("Entri overlap", kpis["overlap"])
+d.metric("Indikator efektivitas", f"{kpis['effectiveness']} / 100")
+st.caption(
+    f"{kpis['minimal']} entri ({kpis['minimal_rate']}%) memiliki Note minim; "
+    f"{kpis['duration']} entri memerlukan validasi durasi. Semua angka di atas dihitung Python secara deterministik."
 )
-b.metric(
-    "Kualitas penulisan",
-    f"{kpis['writing']} / 100",
-    help=(
-        "Rata-rata skor heuristik kelengkapan Note: panjang penjelasan, keberadaan kata aksi/hasil, variasi informasi, dan konteks objek/modul. "
-        "Skor ini mengukur kualitas pencatatan, bukan kualitas pekerjaan."
-    ),
-)
-c.metric(
-    "Entri overlap",
-    kpis["overlap"],
-    help=(
-        "Jumlah entri unik yang terlibat pada dua rentang Actual Start–Actual Finish yang saling bertumpang tindih untuk pegawai yang sama. "
-        "Overlap perlu dikonfirmasi karena bisa berupa aktivitas paralel yang wajar, meeting sambil bekerja, atau pencatatan waktu yang perlu diperbaiki."
-    ),
-)
-d.metric(
-    "Indikator efektivitas",
-    f"{kpis['effectiveness']} / 100",
-    help=(
-        "Proxy gabungan kualitas pencatatan berdasarkan copy, Note minim, overlap, validasi durasi, dan aktivitas berulang-lama. "
-        "Bukan ukuran produktivitas atau performa individu."
-    ),
-)
-st.info(
-    f"Audit memakai {kpis['total']} entri sesuai filter aktif. {kpis['minimal']} entri ({kpis['minimal_rate']}%) memiliki Note "
-    f"dengan penjelasan minim; {kpis['duration']} entri memerlukan validasi durasi."
-)
-st.caption("Indikator di halaman ini adalah sinyal kualitas pencatatan. Validasi konteks tetap diperlukan sebelum mengambil keputusan.")
 
-st.subheader("Rekomendasi")
-if result["quality_llm"] is not None:
-    explanation = result["quality_llm"]
-    model_label = result.get("llm_model") or "LLM"
-    st.caption(f"Narasi: {model_label}")
-    st.write(explanation.summary)
-    if explanation.observations:
-        st.markdown("**Sinyal utama yang mendasari rekomendasi**")
-        for item in explanation.observations:
-            st.write(f"- {item}")
-    if explanation.risks_or_attention_points:
-        st.markdown("**Poin yang perlu didiskusikan manajemen**")
-        for item in explanation.risks_or_attention_points:
-            st.write(f"- {item}")
-    if explanation.recommended_investigation:
-        st.markdown("**Prioritas tindak lanjut / validasi**")
-        for item in explanation.recommended_investigation:
-            st.write(f"- {item}")
-else:
-    st.caption("LLM Off/tidak tersedia; rekomendasi deterministik tetap ditampilkan.")
-    display_deterministic_recommendations(result["recommendations"])
-
-with st.expander("Dasar rekomendasi deterministik", expanded=False):
-    display_deterministic_recommendations(result["recommendations"])
-
-if result["llm_error"]:
-    st.warning("Rekomendasi LLM tidak tersedia, tetapi audit deterministik tetap selesai: " + result["llm_error"])
-    if result.get("llm_provider") == "openai":
-        st.info("Pilih **Qwen Local** di sidebar dan jalankan audit kembali untuk melanjutkan tanpa OpenAI API.")
-if result["embedding_error"]:
-    st.warning("Audit deterministik selesai, tetapi relasi semantik tidak dapat dibuat: " + result["embedding_error"])
-
-# Hide the duration tab when there is nothing to validate.
-tab_labels = ["Penilaian entri", "Per anggota", "Aktivitas berulang", "Copy-paste", "Overlap"]
-if not result["duration"].empty:
-    tab_labels.append("Durasi")
-tab_labels.extend(["Relasi semantik", "Topik"])
-tab_objects = st.tabs(tab_labels)
-tab_map = dict(zip(tab_labels, tab_objects))
-
-with tab_map["Penilaian entri"]:
-    st.caption("Skor dan kategori pada tab ini menilai kelengkapan pencatatan Note, bukan kualitas hasil kerja.")
+entries_tab, copy_tab, overlap_tab, duration_tab, repeated_tab = st.tabs([
+    "Kualitas Note", "Copy / Near-copy", "Overlap", "Durasi", "Aktivitas Berulang"
+])
+with entries_tab:
     st.dataframe(result["entries"], use_container_width=True, hide_index=True)
-
-with tab_map["Per anggota"]:
-    st.markdown("**Cara membaca:** angka menunjukkan pola pencatatan pada filter aktif dan tidak digunakan sebagai ranking performa.")
-    members = (
-        result["entries"]
-        .groupby("employee", as_index=False)
-        .agg(
-            entry_count=("row_id", "size"),
-            total_hours=("hours", "sum"),
-            copy_entry_count=("Indikasi copy", "sum"),
-            minimal_note_count=("Kategori", lambda value: (value == "Minim").sum()),
-        )
-        .sort_values("total_hours", ascending=False)
-        .rename(
-            columns={
-                "employee": "Pegawai",
-                "entry_count": "Jumlah entri",
-                "total_hours": "Total jam tercatat",
-                "copy_entry_count": "Entri dengan indikasi copy",
-                "minimal_note_count": "Entri dengan Note minim",
-            }
-        )
-    )
-    st.caption("'Entri dengan Note minim' = jumlah entri yang skor penulisannya masuk kategori Minim berdasarkan rule Python.")
-    st.dataframe(members, use_container_width=True, hide_index=True)
-
-with tab_map["Aktivitas berulang"]:
-    st.caption("Menunjukkan aktivitas dengan nama task yang berulang pada pegawai yang sama. 'Cenderung lama' membandingkan median durasi task dengan P75 jam pegawai pada filter aktif.")
-    st.dataframe(result["repeated"], use_container_width=True, hide_index=True)
-
-with tab_map["Copy-paste"]:
-    st.markdown(
-        "**Cara membaca:** setiap baris adalah satu pasangan Note milik pegawai yang sama yang identik atau sangat mirip. "
-        "Bandingkan langsung Aktivitas 1/2 dan Note 1/2 untuk memvalidasi apakah kemiripan wajar atau pencatatannya perlu diperkaya."
-    )
-    copy_columns = [
-        "Pegawai",
-        "Tanggal 1",
-        "Aktivitas 1",
-        "Note 1",
-        "Jam 1",
-        "Tanggal 2",
-        "Aktivitas 2",
-        "Note 2",
-        "Jam 2",
-        "Jenis",
-        "Skor fuzzy",
-        "Row 1",
-        "Row 2",
-    ]
-    copy_table = result["copies"].reindex(columns=copy_columns)
-    st.dataframe(copy_table.head(500), use_container_width=True, hide_index=True)
-
-with tab_map["Overlap"]:
-    with st.expander("Help — apa fungsi tabel Overlap dan bagaimana membacanya?", expanded=False):
-        st.markdown(
-            """
-Tabel Overlap membantu memvalidasi dua entri **pegawai yang sama** yang waktunya saling bertumpang tindih.
-
-Contoh: Aktivitas A tercatat 09:00–11:00 dan Aktivitas B 10:30–12:00, sehingga terdapat overlap 30 menit. Ini **bukan otomatis kesalahan**. Bisa terjadi karena meeting sambil melakukan aktivitas lain, kerja paralel, atau salah input waktu.
-
-Baca **Aktivitas 1/2, waktu mulai-selesai, Note, dan Overlap menit** bersama-sama. Fokusnya adalah memastikan konteks dan mencegah double counting bila kedua durasi sebenarnya tidak berjalan paralel.
-"""
-        )
-    st.dataframe(result["overlaps"], use_container_width=True, hide_index=True)
-
-if "Durasi" in tab_map:
-    with tab_map["Durasi"]:
-        st.caption("Tab ini hanya muncul ketika terdapat entri yang Actual Start–Finish-nya tidak tersedia, negatif, atau berbeda dari jam tercatat di luar toleransi.")
+with copy_tab:
+    if result["copies"].empty:
+        st.success("Tidak ada exact-copy atau near-copy pada ambang aktif.")
+    else:
+        st.dataframe(result["copies"], use_container_width=True, hide_index=True)
+with overlap_tab:
+    if result["overlaps"].empty:
+        st.success("Tidak ada overlap waktu yang terdeteksi.")
+    else:
+        st.dataframe(result["overlaps"], use_container_width=True, hide_index=True)
+with duration_tab:
+    if result["duration"].empty:
+        st.success("Tidak ada masalah konsistensi durasi yang terdeteksi.")
+    else:
         st.dataframe(result["duration"], use_container_width=True, hide_index=True)
+with repeated_tab:
+    if result["repeated"].empty:
+        st.info("Tidak ada aktivitas berulang pada scope aktif.")
+    else:
+        st.dataframe(result["repeated"], use_container_width=True, hide_index=True)
 
-with tab_map["Relasi semantik"]:
-    with st.expander("Help — cara membaca relasi semantik", expanded=False):
-        st.markdown(
-            """
-Embedding membandingkan makna **Task + Note**, bukan hanya kesamaan kata. Setiap baris menampilkan dua entri lengkap agar alasan kedekatannya dapat diperiksa.
+st.divider()
+st.subheader("Analisis Semantik & Topic Grouping")
+st.caption("Proses ini terpisah dari audit utama karena membutuhkan embedding. Jalankan hanya saat Anda ingin melihat kedekatan makna dan kelompok topik.")
+semantic_sig = semantic_signature(current_signature, semantic_threshold)
 
-- **Skor semantik** makin mendekati 1 berarti representasi maknanya makin dekat.
-- **Dekat / Sangat dekat** adalah label bantu membaca skor.
-- Relasi semantik **bukan bukti duplikasi**. Dua aktivitas berbeda dapat memiliki konteks yang memang serupa.
-"""
-        )
-    st.dataframe(result["semantic"].head(1000), use_container_width=True, hide_index=True)
+if st.button("Jalankan analisis semantik", type="secondary"):
+    filtered = result["filtered"].copy()
+    with st.status("Membuat embedding dan menghitung relasi semantik…", expanded=True) as status:
+        progress = st.progress(0.0, text="Menyiapkan embedding")
+        try:
+            vectors = embed_texts(
+                filtered["analysis_text"].tolist(),
+                config.ollama_host,
+                config.embedding_model,
+                lambda done, total: progress.progress(done / total if total else 1, text=f"Embedding: {done:,}/{total:,}"),
+            )
+            raw = semantic_pairs(vectors, filtered["row_id"].tolist(), semantic_threshold)
+            semantic = enrich_semantic_pairs(raw, filtered)
+            filtered["Topic Group"] = cluster_vectors(vectors, semantic_threshold)
+            topics = build_topic_summary(filtered)
+            st.session_state["quality_semantic_result"] = {
+                "semantic": semantic,
+                "topics": topics,
+                "signature": semantic_sig,
+                "error": None,
+            }
+            progress.progress(1.0, text="Analisis semantik selesai")
+            status.update(label="Analisis semantik selesai", state="complete", expanded=False)
+        except Exception as exc:
+            st.session_state["quality_semantic_result"] = {
+                "semantic": pd.DataFrame(),
+                "topics": pd.DataFrame(),
+                "signature": semantic_sig,
+                "error": str(exc),
+            }
+            status.update(label="Analisis semantik gagal", state="error", expanded=False)
 
-with tab_map["Topik"]:
-    with st.expander("Help — apa itu Kelompok topik?", expanded=False):
-        st.markdown(
-            """
-**Kelompok topik** adalah nomor cluster yang dibentuk Python dari kemiripan embedding Task + Note. Nomor 1, 2, 3, dan seterusnya **bukan ranking dan bukan skor kualitas**.
-
-Agar lebih mudah dibaca, **Tema representatif** mengambil nama task yang paling sering muncul di cluster tersebut. Gunakan bersama jumlah entri, total jam, pegawai/proyek terkait, dan contoh Note untuk memahami tema aktivitas yang terkumpul.
-"""
-        )
-    st.dataframe(result["topics"], use_container_width=True, hide_index=True)
-
-output = io.BytesIO()
-with pd.ExcelWriter(output, engine="openpyxl") as writer:
-    pd.DataFrame(
-        [
-            ["Indikator", "Nilai"],
-            ["Total entri", kpis["total"]],
-            ["Copy/near-copy", kpis["copy"]],
-            ["Copy rate", kpis["copy_rate"] / 100],
-            ["Skor penulisan", kpis["writing"]],
-            ["Overlap", kpis["overlap"]],
-            ["Masalah durasi", kpis["duration"]],
-            ["Efektivitas (proxy)", kpis["effectiveness"]],
-        ]
-    ).to_excel(writer, sheet_name="Ringkasan", index=False, header=False)
-    result["entries"].to_excel(writer, sheet_name="Penilaian Entri", index=False)
-    result["copies"].to_excel(writer, sheet_name="Copy Paste", index=False)
-    result["overlaps"].to_excel(writer, sheet_name="Overlap", index=False)
-    if not result["duration"].empty:
-        result["duration"].to_excel(writer, sheet_name="Durasi", index=False)
-    result["repeated"].to_excel(writer, sheet_name="Aktivitas Berulang", index=False)
-    result["semantic"].to_excel(writer, sheet_name="Relasi Semantik", index=False)
-    result["topics"].to_excel(writer, sheet_name="Topik", index=False)
-
-st.download_button(
-    "Unduh hasil audit (.xlsx)",
-    output.getvalue(),
-    "hasil_audit_kualitas_timesheet.xlsx",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-)
+semantic_result = st.session_state.get("quality_semantic_result")
+if semantic_result is None:
+    st.info("Analisis semantik belum dijalankan untuk hasil audit ini.")
+elif semantic_result.get("signature") != semantic_sig:
+    st.info("Ambang semantik atau scope berubah. Jalankan analisis semantik kembali.")
+elif semantic_result.get("error"):
+    st.warning("Analisis semantik tidak tersedia: " + semantic_result["error"])
+else:
+    semantic_tab, topic_tab = st.tabs(["Semantic Similarity", "Topic Grouping"])
+    with semantic_tab:
+        if semantic_result["semantic"].empty:
+            st.info("Tidak ada pasangan yang melewati ambang semantic similarity aktif.")
+        else:
+            st.dataframe(semantic_result["semantic"], use_container_width=True, hide_index=True)
+    with topic_tab:
+        st.dataframe(semantic_result["topics"], use_container_width=True, hide_index=True)
