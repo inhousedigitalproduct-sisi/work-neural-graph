@@ -22,90 +22,99 @@ from src.utils.config import get_config
 
 config = get_config()
 dataset_service = TimesheetDataService(config.db_path)
+DEFAULT_FUZZY_THRESHOLD = 0.90
 
 
-def deterministic_signature(filters, fuzzy_threshold: float) -> tuple:
+def dataset_signature(dataframe: pd.DataFrame) -> tuple:
+    if dataframe.empty:
+        return (0,)
     return (
-        filters.start_date,
-        filters.end_date,
-        tuple(filters.employee_names),
-        tuple(filters.projects),
-        tuple(filters.task_keys),
-        tuple(filters.states),
-        filters.note_keyword,
-        round(float(fuzzy_threshold), 4),
+        len(dataframe),
+        str(pd.to_datetime(dataframe["work_date"], errors="coerce").min()),
+        str(pd.to_datetime(dataframe["work_date"], errors="coerce").max()),
+        round(float(pd.to_numeric(dataframe["hours"], errors="coerce").fillna(0).sum()), 4),
     )
 
 
-def semantic_signature(base_signature: tuple, semantic_threshold: float) -> tuple:
-    return (*base_signature, round(float(semantic_threshold), 4), config.embedding_model)
+def build_deterministic_audit(dataframe: pd.DataFrame) -> dict[str, object]:
+    prepared = prepare_quality_dataframe(dataframe)
+    duration = find_duration_issues(prepared)
+    copies = find_copy_pairs(prepared, DEFAULT_FUZZY_THRESHOLD)
+    overlaps = find_overlap_pairs(prepared)
+    kpis, entries, repeated, _ = managerial_summary(prepared, copies, overlaps, duration)
+    return {
+        "filtered": prepared,
+        "kpis": kpis,
+        "entries": entries,
+        "copies": copies,
+        "overlaps": overlaps,
+        "duration": duration,
+        "repeated": repeated,
+        "dataset_signature": dataset_signature(dataframe),
+        "fuzzy_threshold": DEFAULT_FUZZY_THRESHOLD,
+    }
+
+
+def pair_filter(dataframe: pd.DataFrame, row_ids: set[int]) -> pd.DataFrame:
+    if dataframe.empty:
+        return dataframe.copy()
+    if "Row 1" not in dataframe.columns or "Row 2" not in dataframe.columns:
+        return dataframe.copy()
+    return dataframe[
+        dataframe["Row 1"].isin(row_ids) & dataframe["Row 2"].isin(row_ids)
+    ].reset_index(drop=True)
+
+
+def semantic_signature(row_ids: set[int], semantic_threshold: float) -> tuple:
+    return (
+        tuple(sorted(row_ids)),
+        round(float(semantic_threshold), 4),
+        config.embedding_model,
+    )
 
 
 st.title("Audit Kualitas Timesheet")
-st.caption("Audit Python ditampilkan lebih dulu. Analisis semantik dan topic grouping dijalankan terpisah hanya saat dibutuhkan.")
+st.caption(
+    "Audit deterministic dijalankan saat dataset divalidasi di halaman Load Data. "
+    "Halaman ini digunakan untuk membaca hasil dan evidence pada filter aktif."
+)
 
 source_dataframe = dataset_service.load_active_dataset()
 if source_dataframe.empty:
     st.info("Belum ada dataset aktif. Unggah file timesheet melalui halaman Load Data.")
     st.stop()
 
+active_signature = dataset_signature(source_dataframe)
+result = st.session_state.get("quality_audit_result")
+if result is None or result.get("dataset_signature") != active_signature:
+    with st.spinner("Menyiapkan hasil audit dataset aktif…"):
+        result = build_deterministic_audit(source_dataframe)
+        st.session_state["quality_audit_result"] = result
+        st.session_state.pop("quality_semantic_result", None)
+
 filters, _ = render_shared_filters(source_dataframe)
 with st.sidebar:
     st.divider()
-    st.subheader("Pengaturan audit")
-    fuzzy_threshold = st.slider("Ambang near-copy", 0.70, 1.00, 0.90, 0.01)
+    st.subheader("Analisis semantik")
     semantic_threshold = st.slider("Ambang relasi semantik", 0.60, 0.95, 0.82, 0.01)
     st.caption(f"Embedding: {config.embedding_provider.upper()} / {config.embedding_model}")
+    st.caption(f"Near-copy audit menggunakan threshold tetap {DEFAULT_FUZZY_THRESHOLD:.2f} saat validasi dataset.")
 
-current_signature = deterministic_signature(filters, fuzzy_threshold)
-
-if st.button("Jalankan audit kualitas", type="primary"):
-    filtered = prepare_quality_dataframe(apply_graph_filters(source_dataframe, filters))
-    if filtered.empty:
-        st.warning("Filter saat ini tidak menghasilkan entri untuk dianalisis.")
-        st.stop()
-
-    with st.status("Menjalankan audit Python…", expanded=True) as status:
-        activity = st.empty()
-        progress = st.progress(0.0, text="Menyiapkan audit")
-        activity.info("1/3 — Validasi durasi dan waktu kerja")
-        duration = find_duration_issues(filtered)
-        progress.progress(0.20, text="Validasi durasi selesai")
-
-        activity.info("2/3 — Deteksi exact copy dan near-copy")
-        copies = find_copy_pairs(
-            filtered,
-            fuzzy_threshold,
-            lambda done, total: progress.progress(0.20 + 0.55 * (done / total if total else 1), text=f"Fuzzy matching: {done:,}/{total:,}"),
-        )
-
-        activity.info("3/3 — Overlap, kualitas tulisan, dan aktivitas berulang")
-        overlaps = find_overlap_pairs(filtered)
-        kpis, entry_scores, repeated, _ = managerial_summary(filtered, copies, overlaps, duration)
-        progress.progress(1.0, text="Audit Python selesai")
-        status.update(label="Audit Python selesai", state="complete", expanded=False)
-
-    st.session_state["quality_audit_result"] = {
-        "filtered": filtered,
-        "kpis": kpis,
-        "entries": entry_scores,
-        "copies": copies,
-        "overlaps": overlaps,
-        "duration": duration,
-        "repeated": repeated,
-        "signature": current_signature,
-    }
-    st.session_state.pop("quality_semantic_result", None)
-
-result = st.session_state.get("quality_audit_result")
-if result is None:
-    st.info("Pilih filter lalu tekan **Jalankan audit kualitas**. Analisis semantik tidak akan memperlambat proses awal.")
-    st.stop()
-if result.get("signature") != current_signature:
-    st.info("Filter atau ambang near-copy berubah. Jalankan audit kualitas kembali agar hasil mengikuti scope aktif.")
+prepared_full = result["filtered"]
+filtered = apply_graph_filters(prepared_full, filters)
+if filtered.empty:
+    st.info("Filter saat ini tidak menghasilkan entri untuk dianalisis.")
     st.stop()
 
-kpis = result["kpis"]
+row_ids = set(filtered["row_id"].astype(int).tolist())
+copies = pair_filter(result["copies"], row_ids)
+overlaps = pair_filter(result["overlaps"], row_ids)
+duration = result["duration"]
+if not duration.empty:
+    duration = duration[duration["row_id"].isin(row_ids)].reset_index(drop=True)
+
+kpis, entry_scores, repeated, _ = managerial_summary(filtered, copies, overlaps, duration)
+
 st.subheader("Ringkasan audit")
 a, b, c, d = st.columns(4)
 a.metric("Indikasi copy-paste", f"{kpis['copy']} / {kpis['total']}", f"{kpis['copy_rate']}%")
@@ -114,42 +123,42 @@ c.metric("Entri overlap", kpis["overlap"])
 d.metric("Indikator efektivitas", f"{kpis['effectiveness']} / 100")
 st.caption(
     f"{kpis['minimal']} entri ({kpis['minimal_rate']}%) memiliki Note minim; "
-    f"{kpis['duration']} entri memerlukan validasi durasi. Semua angka di atas dihitung Python secara deterministik."
+    f"{kpis['duration']} entri memerlukan validasi durasi. "
+    "Near-copy dihitung sekali saat validasi dataset; filter hanya menyaring hasil audit yang sudah tersedia."
 )
 
 entries_tab, copy_tab, overlap_tab, duration_tab, repeated_tab = st.tabs([
     "Kualitas Note", "Copy / Near-copy", "Overlap", "Durasi", "Aktivitas Berulang"
 ])
 with entries_tab:
-    st.dataframe(result["entries"], use_container_width=True, hide_index=True)
+    st.dataframe(entry_scores, use_container_width=True, hide_index=True)
 with copy_tab:
-    if result["copies"].empty:
-        st.success("Tidak ada exact-copy atau near-copy pada ambang aktif.")
+    if copies.empty:
+        st.success("Tidak ada exact-copy atau near-copy pada scope aktif.")
     else:
-        st.dataframe(result["copies"], use_container_width=True, hide_index=True)
+        st.dataframe(copies, use_container_width=True, hide_index=True)
 with overlap_tab:
-    if result["overlaps"].empty:
-        st.success("Tidak ada overlap waktu yang terdeteksi.")
+    if overlaps.empty:
+        st.success("Tidak ada overlap waktu yang terdeteksi pada scope aktif.")
     else:
-        st.dataframe(result["overlaps"], use_container_width=True, hide_index=True)
+        st.dataframe(overlaps, use_container_width=True, hide_index=True)
 with duration_tab:
-    if result["duration"].empty:
-        st.success("Tidak ada masalah konsistensi durasi yang terdeteksi.")
+    if duration.empty:
+        st.success("Tidak ada masalah konsistensi durasi yang terdeteksi pada scope aktif.")
     else:
-        st.dataframe(result["duration"], use_container_width=True, hide_index=True)
+        st.dataframe(duration, use_container_width=True, hide_index=True)
 with repeated_tab:
-    if result["repeated"].empty:
+    if repeated.empty:
         st.info("Tidak ada aktivitas berulang pada scope aktif.")
     else:
-        st.dataframe(result["repeated"], use_container_width=True, hide_index=True)
+        st.dataframe(repeated, use_container_width=True, hide_index=True)
 
 st.divider()
 st.subheader("Analisis Semantik & Topic Grouping")
-st.caption("Proses ini terpisah dari audit utama karena membutuhkan embedding. Jalankan hanya saat Anda ingin melihat kedekatan makna dan kelompok topik.")
-semantic_sig = semantic_signature(current_signature, semantic_threshold)
+st.caption("Proses embedding tetap on-demand dan tidak ikut memperlambat validasi dataset utama.")
+semantic_sig = semantic_signature(row_ids, semantic_threshold)
 
 if st.button("Jalankan analisis semantik", type="secondary"):
-    filtered = result["filtered"].copy()
     with st.status("Membuat embedding dan menghitung relasi semantik…", expanded=True) as status:
         progress = st.progress(0.0, text="Menyiapkan embedding")
         try:
@@ -157,12 +166,16 @@ if st.button("Jalankan analisis semantik", type="secondary"):
                 filtered["analysis_text"].tolist(),
                 config.ollama_host,
                 config.embedding_model,
-                lambda done, total: progress.progress(done / total if total else 1, text=f"Embedding: {done:,}/{total:,}"),
+                lambda done, total: progress.progress(
+                    done / total if total else 1,
+                    text=f"Embedding: {done:,}/{total:,}",
+                ),
             )
             raw = semantic_pairs(vectors, filtered["row_id"].tolist(), semantic_threshold)
             semantic = enrich_semantic_pairs(raw, filtered)
-            filtered["Topic Group"] = cluster_vectors(vectors, semantic_threshold)
-            topics = build_topic_summary(filtered)
+            topic_data = filtered.copy()
+            topic_data["Topic Group"] = cluster_vectors(vectors, semantic_threshold)
+            topics = build_topic_summary(topic_data)
             st.session_state["quality_semantic_result"] = {
                 "semantic": semantic,
                 "topics": topics,
@@ -182,9 +195,9 @@ if st.button("Jalankan analisis semantik", type="secondary"):
 
 semantic_result = st.session_state.get("quality_semantic_result")
 if semantic_result is None:
-    st.info("Analisis semantik belum dijalankan untuk hasil audit ini.")
+    st.info("Analisis semantik belum dijalankan untuk scope ini.")
 elif semantic_result.get("signature") != semantic_sig:
-    st.info("Ambang semantik atau scope berubah. Jalankan analisis semantik kembali.")
+    st.info("Ambang semantik atau scope berubah. Jalankan analisis semantik kembali bila dibutuhkan.")
 elif semantic_result.get("error"):
     st.warning("Analisis semantik tidak tersedia: " + semantic_result["error"])
 else:
