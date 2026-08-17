@@ -23,7 +23,7 @@ COMMUNITY_COLORS = [
 ISOLATED_COLOR = "#475569"
 
 
-def _sqrt_scaled(values: pd.Series, minimum: float = 5.5, maximum: float = 14.0) -> dict[str, float]:
+def _sqrt_scaled(values: pd.Series, minimum: float = 3.8, maximum: float = 9.5) -> dict[str, float]:
     numeric = pd.to_numeric(values, errors="coerce").fillna(0.0).clip(lower=0.0)
     if numeric.empty:
         return {}
@@ -39,7 +39,7 @@ def _sqrt_scaled(values: pd.Series, minimum: float = 5.5, maximum: float = 14.0)
     }
 
 
-def _linear_scaled(values: pd.Series, minimum: float = 0.8, maximum: float = 4.2) -> dict[str, float]:
+def _linear_scaled(values: pd.Series, minimum: float = 0.7, maximum: float = 3.5) -> dict[str, float]:
     numeric = pd.to_numeric(values, errors="coerce").fillna(0.0)
     if numeric.empty:
         return {}
@@ -60,7 +60,13 @@ def _community_map(graph: nx.Graph) -> tuple[dict[str, int], list[dict[str, Any]
     communities: list[set[str]] = []
     if connected.number_of_nodes() > 0:
         try:
-            communities = [set(group) for group in nx.community.greedy_modularity_communities(connected, weight="shared_task_count")]
+            communities = [
+                set(group)
+                for group in nx.community.greedy_modularity_communities(
+                    connected,
+                    weight="shared_task_count",
+                )
+            ]
         except Exception:
             communities = [set(component) for component in nx.connected_components(connected)]
 
@@ -71,13 +77,27 @@ def _community_map(graph: nx.Graph) -> tuple[dict[str, int], list[dict[str, Any]
         color = COMMUNITY_COLORS[index % len(COMMUNITY_COLORS)]
         for node in members:
             mapping[str(node)] = community_id
-        legend.append({"id": community_id, "label": f"Community {community_id}", "color": color, "count": len(members)})
+        legend.append(
+            {
+                "id": community_id,
+                "label": f"Community {community_id}",
+                "color": color,
+                "count": len(members),
+            }
+        )
 
     isolated = [str(node) for node, degree in graph.degree() if degree == 0]
     for node in isolated:
         mapping[node] = 0
     if isolated:
-        legend.append({"id": 0, "label": "Isolated", "color": ISOLATED_COLOR, "count": len(isolated)})
+        legend.append(
+            {
+                "id": 0,
+                "label": "Isolated",
+                "color": ISOLATED_COLOR,
+                "count": len(isolated),
+            }
+        )
     return mapping, legend
 
 
@@ -90,13 +110,20 @@ def build_sigma_html(
     edge_width_metric: str,
     show_labels: bool,
 ) -> str:
-    """Build a Sigma.js collaboration view optimized for both small and dense networks."""
+    """Build a Sigma.js collaboration view optimized for dense networks."""
     if node_dataframe.empty:
         return "<div style='padding:24px;color:#94a3b8'>Tidak ada node untuk ditampilkan.</div>"
 
     n_nodes = max(graph.number_of_nodes(), 1)
-    k = max(0.22, min(0.9, 2.2 / math.sqrt(n_nodes)))
-    positions = nx.spring_layout(graph, seed=42, weight="shared_task_count", k=k, iterations=140)
+    k = max(0.30, min(1.05, 3.4 / math.sqrt(n_nodes)))
+    positions = nx.spring_layout(
+        graph,
+        seed=42,
+        weight="shared_task_count",
+        k=k,
+        iterations=220,
+        scale=1.35,
+    )
     node_sizes = _sqrt_scaled(node_dataframe[node_size_metric])
     edge_sizes = _linear_scaled(edge_dataframe[edge_width_metric]) if not edge_dataframe.empty else {}
     community_by_node, legend = _community_map(graph)
@@ -114,7 +141,7 @@ def build_sigma_html(
                 "label": employee,
                 "x": float(x),
                 "y": float(y),
-                "size": float(node_sizes.get(str(index), 8.0)),
+                "size": float(node_sizes.get(str(index), 6.0)),
                 "base_color": community_color.get(community, ISOLATED_COLOR),
                 "color": community_color.get(community, ISOLATED_COLOR),
                 "community": community,
@@ -136,7 +163,7 @@ def build_sigma_html(
                 "id": f"edge-{index}",
                 "source": str(row["source"]),
                 "target": str(row["target"]),
-                "size": float(edge_sizes.get(str(index), 1.2)),
+                "size": float(edge_sizes.get(str(index), 1.0)),
                 "color": "#526175",
                 "shared_task_count": int(row.get("shared_task_count", 0)),
                 "shared_tasks": list(row.get("shared_tasks", []) or []),
@@ -145,7 +172,10 @@ def build_sigma_html(
             }
         )
 
-    payload = json.dumps({"nodes": nodes, "edges": edges, "legend": legend}, ensure_ascii=False).replace("</", "<\\/")
+    payload = json.dumps(
+        {"nodes": nodes, "edges": edges, "legend": legend},
+        ensure_ascii=False,
+    ).replace("</", "<\\/")
     label_setting = "true" if show_labels else "false"
 
     return f"""
@@ -164,11 +194,17 @@ def build_sigma_html(
     #stage {{ height:500px; position:relative; border:1px solid #1e293b; background:radial-gradient(circle at center,#0f172a 0,#020617 72%); box-sizing:border-box; }}
     #sigma-container {{ position:absolute; inset:0; }}
     #info-panel {{ position:absolute; display:none; z-index:9; right:14px; top:14px; width:310px; max-height:190px; overflow:auto; padding:11px 13px; border:1px solid #334155; border-radius:10px; background:rgba(15,23,42,.96); box-shadow:0 10px 35px rgba(0,0,0,.35); font-size:12px; line-height:1.45; }}
-    #legend {{ position:absolute; left:14px; bottom:14px; z-index:7; max-width:320px; padding:8px 10px; border:1px solid #293548; border-radius:9px; background:rgba(15,23,42,.9); font-size:11px; }}
-    .legend-title {{ color:#cbd5e1; font-weight:700; margin-bottom:5px; }}
-    .legend-grid {{ display:flex; flex-wrap:wrap; gap:5px 10px; }}
-    .legend-item {{ display:flex; align-items:center; gap:5px; color:#94a3b8; }}
-    .legend-dot {{ width:9px; height:9px; border-radius:50%; flex:0 0 auto; }}
+    #legend {{ position:absolute; left:14px; bottom:14px; z-index:7; width:220px; max-height:300px; overflow:auto; padding:12px; border:1px solid rgba(71,85,105,.75); border-radius:14px; background:linear-gradient(180deg,rgba(15,23,42,.97),rgba(8,15,30,.93)); box-shadow:0 16px 38px rgba(0,0,0,.32); backdrop-filter:blur(8px); }}
+    .legend-head {{ display:flex; align-items:flex-start; justify-content:space-between; gap:10px; margin-bottom:9px; }}
+    .legend-title {{ color:#f8fafc; font-size:12px; font-weight:800; letter-spacing:.02em; }}
+    .legend-subtitle {{ color:#64748b; font-size:10px; margin-top:2px; }}
+    .legend-total {{ color:#94a3b8; font-size:10px; border:1px solid #334155; border-radius:999px; padding:2px 7px; white-space:nowrap; }}
+    .legend-list {{ display:grid; gap:5px; }}
+    .legend-item {{ display:grid; grid-template-columns:5px 1fr auto; align-items:center; min-height:25px; gap:8px; padding:3px 6px 3px 3px; border-radius:7px; color:#cbd5e1; }}
+    .legend-item:hover {{ background:rgba(51,65,85,.28); }}
+    .legend-swatch {{ width:5px; height:22px; border-radius:999px; box-shadow:0 0 12px color-mix(in srgb, var(--legend-color) 35%, transparent); }}
+    .legend-label {{ font-size:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
+    .legend-count {{ min-width:24px; text-align:right; color:#f8fafc; font-weight:700; font-size:10px; }}
     #detail {{ height:270px; padding:14px; border:1px solid #1e293b; border-top:0; border-radius:0 0 12px 12px; background:#0f172a; font-size:13px; line-height:1.5; box-sizing:border-box; overflow:hidden; }}
     .detail-grid {{ display:grid; grid-template-columns:minmax(220px,.8fr) minmax(320px,1.2fr); gap:18px; height:100%; }}
     .summary-card {{ border:1px solid #243244; border-radius:10px; padding:12px; background:#111827; height:100%; box-sizing:border-box; overflow:hidden; }}
@@ -182,11 +218,11 @@ def build_sigma_html(
     .list-row {{ display:flex; justify-content:space-between; gap:12px; padding:5px 0; border-bottom:1px solid rgba(51,65,85,.45); }}
     .list-row:last-child {{ border-bottom:0; }}
     .pill {{ display:inline-block; margin:4px 4px 0 0; padding:2px 7px; border:1px solid #334155; border-radius:999px; color:#cbd5e1; font-size:11px; }}
-    @media(max-width:900px) {{ .toolbar .hint {{ display:none; }} #legend {{ max-width:240px; }} }}
+    @media(max-width:900px) {{ .toolbar .hint {{ display:none; }} #legend {{ width:190px; }} }}
     @media(max-width:760px) {{
       #stage {{ height:430px; }} #detail {{ height:335px; overflow-y:auto; }}
       .detail-grid {{ grid-template-columns:1fr; height:auto; }} .summary-card {{ height:auto; }} .detail-scroll {{ height:auto; overflow:visible; }}
-      #info-panel {{ width:250px; }}
+      #info-panel {{ width:250px; }} #legend {{ width:170px; max-height:220px; }}
     }}
   </style>
 </head>
@@ -223,8 +259,9 @@ def build_sigma_html(
     const isolateButton = document.getElementById("isolate");
     const resetButton = document.getElementById("reset");
 
-    legend.innerHTML = `<div class="legend-title">Community color</div><div class="legend-grid">` +
-      data.legend.map(item => `<div class="legend-item"><span class="legend-dot" style="background:${{item.color}}"></span>${{item.label}} (${{item.count}})</div>`).join("") +
+    const totalNodes = data.legend.reduce((sum, item) => sum + Number(item.count || 0), 0);
+    legend.innerHTML = `<div class="legend-head"><div><div class="legend-title">Community</div><div class="legend-subtitle">Color = collaboration cluster</div></div><div class="legend-total">${{totalNodes}} nodes</div></div><div class="legend-list">` +
+      data.legend.map(item => `<div class="legend-item"><span class="legend-swatch" style="--legend-color:${{item.color}};background:${{item.color}}"></span><span class="legend-label">${{item.label}}</span><span class="legend-count">${{item.count}}</span></div>`).join("") +
       `</div>`;
 
     data.nodes.slice().sort((a,b) => a.label.localeCompare(b.label)).forEach(n => {{
@@ -242,36 +279,39 @@ def build_sigma_html(
       renderLabels: {label_setting},
       labelColor: {{attribute: "labelColor", color: "#e2e8f0"}},
       labelSize: 12,
-      labelDensity: 0.6,
-      labelGridCellSize: 80,
+      labelDensity: 0.55,
+      labelGridCellSize: 86,
       defaultNodeColor: "#60a5fa",
       defaultEdgeColor: "#526175",
       enableEdgeEvents: true,
-      minCameraRatio: 0.18,
-      maxCameraRatio: 4,
+      minCameraRatio: 0.035,
+      maxCameraRatio: 6,
       nodeReducer: (node, attrs) => {{
         const result = {{...attrs, color: attrs.base_color || attrs.color, labelColor: "#e2e8f0"}};
         if (hideIsolated && attrs.isolated) {{ result.hidden = true; return result; }}
+
         const focus = selectedNode || hoveredNode;
         const isNeighbor = focus && graph.areNeighbors(node, focus);
-        const important = attrs.collaborator_count >= 4;
-        const zoomAllowsLabel = cameraRatio < 0.8;
+        const important = attrs.collaborator_count >= 5;
+        const zoomAllowsLabel = cameraRatio < 0.7;
         if (!{label_setting} || (!focus && !important && !zoomAllowsLabel)) result.label = "";
+
         if (focus && node !== focus && !isNeighbor) {{
-          result.color = "#182235";
-          result.labelColor = "#4b5d73";
-          result.size = Math.max(4.5, attrs.size * 0.82);
+          result.color = "#172033";
+          result.labelColor = "#42536a";
+          result.size = Math.max(2.8, attrs.size * 0.62);
           result.zIndex = 0;
         }} else if (node === focus) {{
           result.color = "#fbbf24";
           result.labelColor = "#f8fafc";
-          result.size = Math.min(16, attrs.size * 1.08);
+          result.size = Math.max(5.5, Math.min(9.8, attrs.size * 0.88));
           result.forceLabel = true;
-          result.zIndex = 3;
+          result.zIndex = 4;
         }} else if (isNeighbor) {{
           result.color = attrs.base_color || "#93c5fd";
+          result.size = Math.max(4.0, Math.min(8.5, attrs.size * 0.78));
           result.forceLabel = true;
-          result.zIndex = 2;
+          result.zIndex = 3;
         }}
         return result;
       }},
@@ -281,19 +321,22 @@ def build_sigma_html(
         if (focus) {{
           const ends = graph.extremities(edge);
           if (!ends.includes(focus)) {{
-            result.color = "#172033";
-            result.size = Math.max(0.35, attrs.size * 0.32);
+            result.color = "#131c2d";
+            result.size = Math.max(0.22, attrs.size * 0.24);
           }} else {{
-            result.color = "#cbd5e1";
-            result.size = Math.min(5.2, attrs.size * 1.3);
-            result.zIndex = 2;
+            result.color = "#e2e8f0";
+            result.size = Math.max(1.5, Math.min(4.6, attrs.size * 1.75));
+            result.zIndex = 4;
           }}
         }}
         return result;
       }},
     }});
 
-    renderer.getCamera().on("updated", state => {{ cameraRatio = state.ratio; renderer.refresh(); }});
+    renderer.getCamera().on("updated", state => {{
+      cameraRatio = state.ratio;
+      renderer.refresh();
+    }});
 
     function topCollaboratorRows(items) {{
       if (!items || !items.length) return '<span class="muted">Belum ada collaborator.</span>';
@@ -334,7 +377,7 @@ def build_sigma_html(
       nodeDetail(node);
       if (navigate) {{
         const attrs = graph.getNodeAttributes(node);
-        renderer.getCamera().animate({{x: attrs.x, y: attrs.y, ratio: 0.72}}, {{duration: 420}});
+        renderer.getCamera().animate({{x: attrs.x, y: attrs.y, ratio: 0.48}}, {{duration: 420}});
       }}
       renderer.refresh();
     }}
@@ -346,14 +389,25 @@ def build_sigma_html(
     renderer.on("enterEdge", ({{edge}}) => showEdgeInfo(edge));
     renderer.on("leaveEdge", () => {{ infoPanel.style.display = "none"; }});
 
-    renderer.on("downNode", ({{node}}) => {{ isDragging = true; draggedNode = node; renderer.getCamera().disable(); }});
+    renderer.on("downNode", ({{node}}) => {{
+      isDragging = true;
+      draggedNode = node;
+      renderer.getCamera().disable();
+    }});
     renderer.getMouseCaptor().on("mousemovebody", event => {{
       if (!isDragging || !draggedNode) return;
       const pos = renderer.viewportToGraph(event);
-      graph.setNodeAttribute(draggedNode, "x", pos.x); graph.setNodeAttribute(draggedNode, "y", pos.y);
-      event.preventSigmaDefault?.(); event.original?.preventDefault?.(); event.original?.stopPropagation?.();
+      graph.setNodeAttribute(draggedNode, "x", pos.x);
+      graph.setNodeAttribute(draggedNode, "y", pos.y);
+      event.preventSigmaDefault?.();
+      event.original?.preventDefault?.();
+      event.original?.stopPropagation?.();
     }});
-    renderer.getMouseCaptor().on("mouseup", () => {{ isDragging = false; draggedNode = null; renderer.getCamera().enable(); }});
+    renderer.getMouseCaptor().on("mouseup", () => {{
+      isDragging = false;
+      draggedNode = null;
+      renderer.getCamera().enable();
+    }});
 
     search.addEventListener("change", () => focusNode(search.value || null, true));
     fitButton.addEventListener("click", () => renderer.getCamera().animatedReset({{duration:420}}));
@@ -364,7 +418,12 @@ def build_sigma_html(
       renderer.refresh();
     }});
     resetButton.addEventListener("click", () => {{
-      focusNode(null); hideIsolated = false; isolateButton.textContent = "Hide Isolated"; isolateButton.classList.remove("active"); renderer.getCamera().animatedReset({{duration:420}}); renderer.refresh();
+      focusNode(null);
+      hideIsolated = false;
+      isolateButton.textContent = "Hide Isolated";
+      isolateButton.classList.remove("active");
+      renderer.getCamera().animatedReset({{duration:420}});
+      renderer.refresh();
     }});
   </script>
 </body>
