@@ -315,7 +315,11 @@ with trend_tab:
     st.subheader("Quality Trend")
     st.caption(
         "Setiap periode dihitung ulang dari data timesheet agar rate comparable. "
-        "Semakin rendah issue rate umumnya semakin baik; semakin tinggi quality score semakin baik."
+        "Gunakan arah metric di bawah agar kenaikan/penurunan tidak salah dibaca."
+    )
+    st.info(
+        "↑ **High is better** = semakin tinggi nilainya semakin baik (Overall Quality, Writing Quality).  "
+        "↓ **Low is better** = semakin rendah nilainya semakin baik (seluruh issue rate)."
     )
     grouping = st.segmented_control(
         "Grouping",
@@ -332,35 +336,49 @@ with trend_tab:
     else:
         latest = trend.iloc[-1]
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric(
-            "Overall Quality",
-            f"{float(latest['effectiveness']):.1f}",
-            metric_delta(trend, "effectiveness"),
-        )
-        k2.metric(
-            "Copy / Near-copy",
-            f"{float(latest['copy_rate']):.1f}%",
-            metric_delta(trend, "copy_rate"),
-            delta_color="inverse",
-        )
-        k3.metric(
-            "Note Minim",
-            f"{float(latest['minimal_note_rate']):.1f}%",
-            metric_delta(trend, "minimal_note_rate"),
-            delta_color="inverse",
-        )
-        k4.metric(
-            "Writing Quality",
-            f"{float(latest['writing_quality']):.1f}",
-            metric_delta(trend, "writing_quality"),
-        )
+        with k1:
+            st.metric(
+                "Overall Quality",
+                f"{float(latest['effectiveness']):.1f}",
+                metric_delta(trend, "effectiveness"),
+            )
+            st.caption("↑ High is better")
+        with k2:
+            st.metric(
+                "Copy / Near-copy",
+                f"{float(latest['copy_rate']):.1f}%",
+                metric_delta(trend, "copy_rate"),
+                delta_color="inverse",
+            )
+            st.caption("↓ Low is better")
+        with k3:
+            st.metric(
+                "Note Minim",
+                f"{float(latest['minimal_note_rate']):.1f}%",
+                metric_delta(trend, "minimal_note_rate"),
+                delta_color="inverse",
+            )
+            st.caption("↓ Low is better")
+        with k4:
+            st.metric(
+                "Writing Quality",
+                f"{float(latest['writing_quality']):.1f}",
+                metric_delta(trend, "writing_quality"),
+            )
+            st.caption("↑ High is better")
 
         st.markdown("#### Overall Quality Trend")
-        st.caption("Garis utama menunjukkan arah kualitas keseluruhan; garis putus-putus menunjukkan kualitas penulisan Note.")
+        st.caption(
+            "↑ **High is better** — garis utama menunjukkan Overall Quality dan garis putus-putus menunjukkan Writing Quality. "
+            "Kenaikan score berarti kualitas membaik."
+        )
         st.plotly_chart(build_score_trend_figure(trend), use_container_width=True)
 
         st.markdown("#### Issue Trend Heatmap")
-        st.caption("Warna yang lebih kuat menunjukkan issue rate lebih tinggi. Gunakan heatmap untuk menemukan periode dan jenis masalah yang paling dominan.")
+        st.caption(
+            "↓ **Low is better** — warna yang lebih kuat menunjukkan issue rate lebih tinggi. "
+            "Nilai yang turun dari periode ke periode berarti kondisi membaik."
+        )
         st.plotly_chart(build_issue_heatmap(trend), use_container_width=True)
 
         metric_options = {label: column for column, label in ISSUE_METRICS}
@@ -372,10 +390,17 @@ with trend_tab:
         focused_column = metric_options[focused_label]
         focus_delta = metric_delta(trend, focused_column)
         direction = "stabil" if focus_delta in (None, 0) else "menurun" if focus_delta < 0 else "meningkat"
+        interpretation = (
+            "Belum ada periode pembanding."
+            if focus_delta is None
+            else "Improving" if focus_delta < 0
+            else "Stable" if focus_delta == 0
+            else "Needs attention"
+        )
         st.caption(
-            f"Periode terbaru: **{float(latest[focused_column]):.1f}%**. "
+            f"↓ **Low is better** — periode terbaru: **{float(latest[focused_column]):.1f}%**. "
             f"Dibanding periode sebelumnya: **{direction}**"
-            + ("." if focus_delta is None else f" ({focus_delta:+.1f} pp).")
+            + ("." if focus_delta is None else f" ({focus_delta:+.1f} pp) · **{interpretation}**.")
         )
         st.plotly_chart(build_issue_focus_figure(trend, focused_column, focused_label), use_container_width=True)
 
