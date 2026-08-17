@@ -67,6 +67,22 @@ def build_graph_llm_brief(graph_result, analytics_snapshot) -> dict:
     }
 
 
+def add_collaboration_frequency(edge_dataframe: pd.DataFrame) -> pd.DataFrame:
+    """Estimate collaboration frequency as employee-pair interactions across shared tasks."""
+    enriched = edge_dataframe.copy()
+    if enriched.empty:
+        enriched["collaboration_count"] = pd.Series(dtype="int64")
+        return enriched
+
+    def collaboration_count(row: pd.Series) -> int:
+        employee_count = len(set(row.get("employees", [])))
+        employee_pairs = employee_count * (employee_count - 1) // 2
+        return int(row.get("task_count", 0)) * employee_pairs
+
+    enriched["collaboration_count"] = enriched.apply(collaboration_count, axis=1).astype(int)
+    return enriched
+
+
 st.title("Neural Graph")
 st.caption("Peta kesinambungan pekerjaan antar tanggal dari data timesheet yang sedang difilter.")
 
@@ -77,7 +93,12 @@ if source_dataframe.empty:
 
 source_dataframe["work_date"] = pd.to_datetime(source_dataframe["work_date"])
 
-filters, selected_strategy = render_shared_filters(source_dataframe, include_strategy=True)
+filters, selected_strategy = render_shared_filters(
+    source_dataframe,
+    include_strategy=True,
+    include_employee_filter=False,
+    project_label="Nama Project",
+)
 selected_provider = render_llm_provider_selector(config)
 selected_profile = config.llm_profile(selected_provider) if selected_provider != "off" else None
 ai_service = None
@@ -102,12 +123,7 @@ with st.sidebar:
             index=0,
             key="neural_graph_node_size_metric",
         )
-        edge_width_metric = st.selectbox(
-            "Edge Weight Metric",
-            ["task_count", "related_hours", "gap_days", "interruption_days"],
-            index=0,
-            key="neural_graph_edge_width_metric",
-        )
+
 result = service.build_graph(filters=filters, strategy=selected_strategy or GraphStrategy.SEQUENTIAL)
 analytics_snapshot = analytics_service.build_snapshot(
     filters=filters,
@@ -126,13 +142,13 @@ with st.expander("Cara membaca grafik", expanded=True):
     left, middle, right = st.columns(3)
     left.markdown("**Lingkaran = satu tanggal kerja**  \nUkuran lingkaran mengikuti metrik *Node Size Metric* di sidebar.")
     middle.markdown("**Garis = task yang muncul lagi**  \nSebuah garis berarti minimal satu task dikerjakan pada kedua tanggal tersebut.")
-    right.markdown("**Ukuran & warna = nilai metrik node**  \nSemakin besar/gelap node, semakin tinggi nilai metrik yang dipilih.")
+    right.markdown("**Warna & ketebalan garis = frekuensi kolaborasi**  \nSemakin kuat garis, semakin banyak interaksi kolaborasi pada task terkait.")
     st.info(
         "Penting: posisi node hanya menunjukkan struktur hubungan antar tanggal dari layout jaringan. "
-        "Posisi vertikal/horizontal node **bukan sumbu jumlah jam** dan tidak boleh dibandingkan dengan posisi angka pada legenda warna. "
-        "Mulailah dengan memilih satu pegawai atau satu proyek. Arahkan kursor ke lingkaran untuk melihat tanggal lengkap, "
+        "Posisi vertikal/horizontal node **bukan sumbu jumlah jam**. "
+        "Mulailah dengan memilih satu proyek pada filter Nama Project. Arahkan kursor ke lingkaran untuk melihat tanggal lengkap, "
         "aktivitas, pegawai, proyek, Note, dan tanggal lain yang terhubung. Arahkan kursor ke titik tengah garis untuk melihat "
-        "task yang menjadi alasan relasi. 'Relasi tanggal' adalah jumlah tanggal lain yang terhubung, bukan jumlah task. "
+        "task dan frekuensi kolaborasi. Frekuensi kolaborasi dihitung dari jumlah pasangan pegawai yang terlibat dikalikan jumlah task terkait. "
         "Pada strategi Sequential, satu task hanya menghubungkan dua kemunculan tanggal yang berurutan untuk task tersebut."
     )
 st.subheader("Period Analysis")
@@ -178,7 +194,7 @@ with st.sidebar:
             )
 
 effective_label_mode = auto_label_mode if label_mode == "Auto" else label_mode
-display_edge_dataframe = result.edge_dataframe.copy()
+display_edge_dataframe = add_collaboration_frequency(result.edge_dataframe)
 if not display_edge_dataframe.empty:
     display_edge_dataframe = display_edge_dataframe[
         display_edge_dataframe["task_count"] >= min_edge_task_count
@@ -214,7 +230,7 @@ figure = build_graph_figure(
     result.node_dataframe,
     display_edge_dataframe,
     node_size_metric=node_size_metric,
-    edge_width_metric=edge_width_metric,
+    edge_width_metric="collaboration_count",
     show_node_labels=effective_label_mode == "All",
     activity_dataframe=result.filtered_dataframe,
 )
@@ -228,13 +244,14 @@ metric_display_labels = {
 }
 metric_display = metric_display_labels.get(node_size_metric, node_size_metric.replace("_", " ").title())
 st.caption(
-    f"Ukuran & warna node: **{metric_display}**. "
-    f"Ketebalan garis: **{edge_width_metric.replace('_', ' ')}**. "
-    "Legenda warna ditempatkan horizontal agar tidak terbaca sebagai sumbu Y."
+    f"Ukuran node: **{metric_display}**. "
+    "Warna & ketebalan garis: **frekuensi kolaborasi**. "
+    "Bar scale horizontal menunjukkan dari kolaborasi rendah ke tinggi."
 )
 st.info(
     "**Cara membaca posisi node:** posisi node hanya membantu memperlihatkan pola hubungan jaringan. "
-    f"Untuk membaca **{metric_display.lower()}**, gunakan angka pada hover serta ukuran/warna node — bukan posisi node di area grafik."
+    f"Untuk membaca **{metric_display.lower()}**, gunakan angka pada hover serta ukuran node. "
+    "Untuk membaca intensitas kolaborasi, gunakan warna/ketebalan garis dan bar scale di bawah grafik."
 )
 st.plotly_chart(figure, use_container_width=True)
 
