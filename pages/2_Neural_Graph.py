@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from src.analytics.service import AnalyticsService
-from src.graph.builder import apply_graph_filters
+from src.graph.builder import GraphFilterConfig, apply_graph_filters
 from src.graph.collaboration import build_collaboration_graph
-from src.graph.collaboration_visualizer import build_collaboration_figure
+from src.graph.sigma_renderer import build_sigma_html
 from src.services import TimesheetDataService
-from src.ui.components import render_analytics_summary, render_shared_filters
+from src.ui.components import render_analytics_summary
 from src.utils.config import get_config
 
 config = get_config()
@@ -16,24 +17,86 @@ dataset_service = TimesheetDataService(config.db_path)
 analytics_service = AnalyticsService(config.db_path)
 
 st.title("Neural Graph — Kolaborasi")
-st.caption("Peta kolaborasi antar-karyawan berdasarkan task yang sama pada periode dan filter aktif. Tanggal tidak digunakan sebagai pembentuk relasi.")
+st.caption(
+    "Eksplorasi hubungan antar-karyawan berdasarkan task yang sama. "
+    "Atur project dan periode untuk melihat bagaimana pola kolaborasi berubah pada scope yang berbeda."
+)
 
 source_dataframe = dataset_service.load_active_dataset()
 if source_dataframe.empty:
     st.info("Belum ada data timesheet. Muat data dari halaman Load Data.")
     st.stop()
 
-source_dataframe["work_date"] = pd.to_datetime(source_dataframe["work_date"])
-filters, _ = render_shared_filters(source_dataframe)
+source_dataframe["work_date"] = pd.to_datetime(source_dataframe["work_date"], errors="coerce")
+source_dataframe = source_dataframe[source_dataframe["work_date"].notna()].copy()
+if source_dataframe.empty:
+    st.info("Dataset tidak memiliki tanggal kerja valid untuk membangun Collaboration Graph.")
+    st.stop()
+
+min_date = source_dataframe["work_date"].min().date()
+max_date = source_dataframe["work_date"].max().date()
+projects = sorted(source_dataframe["project"].dropna().astype(str).unique().tolist())
+employees = sorted(source_dataframe["employee"].dropna().astype(str).unique().tolist())
+
+with st.container(border=True):
+    st.markdown("#### Scope Kolaborasi")
+    st.caption("Project dan rentang tanggal menjadi filter utama. Kosongkan Project/Karyawan untuk melihat seluruh scope.")
+    date_col, project_col, employee_col = st.columns([1.15, 1.35, 1.35], gap="medium")
+    with date_col:
+        date_range = st.date_input(
+            "Range Date",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date,
+            key="neural_graph_date_range",
+        )
+    with project_col:
+        selected_projects = st.multiselect(
+            "Project",
+            projects,
+            key="neural_graph_projects",
+            placeholder="Semua project",
+        )
+    with employee_col:
+        selected_employees = st.multiselect(
+            "Karyawan",
+            employees,
+            key="neural_graph_employees",
+            placeholder="Semua karyawan",
+        )
+
+start_date = min_date
+end_date = max_date
+if isinstance(date_range, tuple):
+    if len(date_range) >= 1 and date_range[0] is not None:
+        start_date = date_range[0]
+    if len(date_range) >= 2 and date_range[1] is not None:
+        end_date = date_range[1]
+elif date_range is not None:
+    start_date = end_date = date_range
+
+filters = GraphFilterConfig(
+    employee_names=tuple(selected_employees),
+    projects=tuple(selected_projects),
+    task_keys=(),
+    states=(),
+    note_keyword=None,
+    start_date=start_date.isoformat(),
+    end_date=end_date.isoformat(),
+)
 filtered = apply_graph_filters(source_dataframe, filters)
 result = build_collaboration_graph(filtered)
 snapshot = analytics_service.build_snapshot(filters=filters)
 
 if result.filtered_dataframe.empty:
-    st.info("Filter saat ini tidak menghasilkan data.")
+    st.info("Scope yang dipilih tidak menghasilkan data. Ubah Project, Karyawan, atau Range Date.")
     st.stop()
 
 summary = result.summary
+scope_project = ", ".join(selected_projects) if selected_projects else "Semua project"
+scope_employee = f"{len(selected_employees)} karyawan dipilih" if selected_employees else "Semua karyawan"
+st.caption(f"{start_date:%d %b %Y} → {end_date:%d %b %Y} • {scope_project} • {scope_employee}")
+
 a, b, c = st.columns(3)
 a.metric("Karyawan", summary.employees)
 b.metric("Relasi kolaborasi", summary.collaboration_links)
@@ -43,20 +106,7 @@ d.metric("Project kolaboratif", summary.projects)
 e.metric("Jam pada task kolaboratif", f"{summary.collaborative_hours:.2f}")
 f.metric("Rata-rata kolaborator", f"{summary.average_collaborators:.2f}")
 
-with st.expander("Cara membaca Collaboration Graph", expanded=True):
-    st.markdown(
-        """
-- **Node/dot = karyawan.**
-- **Garis = dua karyawan pernah mengerjakan `task_key` yang sama** dalam periode/filter aktif, walaupun tanggal pengerjaannya berbeda.
-- **Dot lebih besar = nilai metrik node lebih tinggi.** Default-nya jumlah kolaborator unik.
-- **Garis lebih tebal = hubungan lebih kuat.** Default-nya jumlah task bersama.
-- Arahkan kursor ke **dot** untuk melihat jumlah kolaborator, task/project kolaboratif, jam, kolaborator utama, dan task dominan.
-- Arahkan kursor ke **titik tengah garis** untuk melihat task/project yang menjadi dasar hubungan dua karyawan.
-"""
-    )
-
 with st.sidebar:
-    st.divider()
     st.subheader("Collaboration Graph")
     node_size_metric = st.selectbox(
         "Ukuran node",
@@ -75,7 +125,11 @@ with st.sidebar:
         format_func=lambda value: "Jumlah task bersama" if value == "shared_task_count" else "Total jam terkait",
         key="neural_graph_edge_width_metric",
     )
-    show_labels = st.toggle("Tampilkan nama karyawan", value=summary.employees <= 40, key="neural_graph_show_labels")
+    show_labels = st.toggle(
+        "Tampilkan nama karyawan",
+        value=summary.employees <= 40,
+        key="neural_graph_show_labels",
+    )
     min_shared_tasks = 1
     if not result.edge_dataframe.empty:
         maximum = int(result.edge_dataframe["shared_task_count"].max())
@@ -88,30 +142,54 @@ with st.sidebar:
                 key="neural_graph_min_shared_tasks",
             )
         else:
-            st.caption("Minimum task bersama: 1 (semua relasi hanya memiliki 1 task bersama)")
+            st.caption("Minimum task bersama: 1")
 
-edges = result.edge_dataframe
+edges = result.edge_dataframe.copy()
 if not edges.empty:
     edges = edges[edges["shared_task_count"] >= min_shared_tasks].reset_index(drop=True)
 
 display_graph = result.graph.copy()
 for source, target in list(display_graph.edges):
-    if edges.empty or not (((edges["source"] == source) & (edges["target"] == target)) | ((edges["source"] == target) & (edges["target"] == source))).any():
+    keep = False
+    if not edges.empty:
+        keep = bool(
+            (
+                ((edges["source"] == source) & (edges["target"] == target))
+                | ((edges["source"] == target) & (edges["target"] == source))
+            ).any()
+        )
+    if not keep:
         display_graph.remove_edge(source, target)
 
+st.subheader("Peta kolaborasi interaktif")
+st.caption(
+    "Klik node untuk fokus ke karyawan dan kolaboratornya, drag node untuk mengatur posisi, scroll untuk zoom, "
+    "dan hover garis untuk melihat task/project bersama."
+)
 if result.summary.collaboration_links == 0:
-    st.info("Tidak ada task yang dikerjakan oleh lebih dari satu karyawan pada filter aktif. Semua karyawan ditampilkan sebagai node tanpa garis.")
+    st.info("Tidak ada task yang dikerjakan oleh lebih dari satu karyawan pada scope aktif. Node tetap ditampilkan tanpa garis.")
 
-figure = build_collaboration_figure(
+sigma_html = build_sigma_html(
     display_graph,
     result.node_dataframe,
     edges,
     node_size_metric=node_size_metric,
     edge_width_metric=edge_width_metric,
-    show_node_labels=show_labels,
+    show_labels=show_labels,
 )
-st.subheader("Peta kolaborasi karyawan")
-st.plotly_chart(figure, use_container_width=True)
+components.html(sigma_html, height=735, scrolling=False)
+
+with st.expander("Cara membaca Collaboration Graph", expanded=False):
+    st.markdown(
+        """
+- **Node/dot = karyawan.**
+- **Garis = dua karyawan mengerjakan `task_key` yang sama** pada Project/Range Date aktif, walaupun tanggal pengerjaannya berbeda.
+- **Klik node** untuk meredupkan node di luar lingkaran kolaborasinya dan melihat detail karyawan.
+- **Hover garis** untuk melihat task, project, dan total jam yang menjadi dasar relasi.
+- **Ukuran node** dan **ketebalan garis** dapat diganti dari sidebar.
+- Label dan kekuatan relasi adalah alat eksplorasi pola kerja, bukan penilaian performa individu.
+"""
+    )
 
 st.subheader("Period Analysis")
 render_analytics_summary(
