@@ -19,6 +19,7 @@ PINBALL_SCRIPT = r"""
     const MAX_ANIMATED_EDGES = 120;
     let pinballDpr = 1;
     let lastPinballFrame = 0;
+    let pinballRuntimeWarned = false;
 
     function resizePinballLayer() {
       if (!pinballLayer || !pinballStage || !pinballContext) return;
@@ -50,13 +51,23 @@ PINBALL_SCRIPT = r"""
       return Math.max(0, Math.min(1, (Number(value || 0) - low) / (high - low)));
     }
 
+    function rgbaFromHex(hex, alpha) {
+      const normalized = String(hex || "#94a3b8").replace("#", "");
+      if (!/^[0-9a-fA-F]{6}$/.test(normalized)) return `rgba(148,163,184,${alpha})`;
+      const value = parseInt(normalized, 16);
+      const r = (value >> 16) & 255;
+      const g = (value >> 8) & 255;
+      const b = value & 255;
+      return `rgba(${r},${g},${b},${alpha})`;
+    }
+
     const pinballEdges = data.edges.map(edge => {
       const count = Number(edge.collaboration_count || edge.shared_task_count || 1);
       return {
         key: edge.id,
         source: edge.source,
         target: edge.target,
-        color: edge.color || "#f8fafc",
+        color: edge.color || "#94a3b8",
         count,
         intensity: collaborationRatio(count),
         phase: edgePhase(edge.id),
@@ -81,37 +92,46 @@ PINBALL_SCRIPT = r"""
       const pointCache = new Map();
       const viewportPoint = nodeId => {
         if (pointCache.has(nodeId)) return pointCache.get(nodeId);
-        const attrs = graph.getNodeAttributes(nodeId);
-        const point = renderer.graphToViewport({x: attrs.x, y: attrs.y});
-        pointCache.set(nodeId, point);
-        return point;
+        try {
+          const attrs = graph.getNodeAttributes(nodeId);
+          const point = renderer.graphToViewport({x: attrs.x, y: attrs.y});
+          if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
+          pointCache.set(nodeId, point);
+          return point;
+        } catch (error) {
+          if (!pinballRuntimeWarned) {
+            console.warn("Pinball animation disabled for an invalid Sigma viewport coordinate.", error);
+            pinballRuntimeWarned = true;
+          }
+          return null;
+        }
       };
 
       pinballEdges.forEach(edge => {
         const sourcePoint = viewportPoint(edge.source);
         const targetPoint = viewportPoint(edge.target);
+        if (!sourcePoint || !targetPoint) return;
+
         const active = hasFocus && (edge.source === focusNode || edge.target === focusNode);
         const speed = active ? 0.00034 + edge.intensity * 0.00012 : 0.00022 + edge.intensity * 0.00008;
         const phase = (now * speed + edge.phase) % 1;
         const travel = 1 - Math.abs(1 - 2 * phase);
         const x = sourcePoint.x + (targetPoint.x - sourcePoint.x) * travel;
         const y = sourcePoint.y + (targetPoint.y - sourcePoint.y) * travel;
-        const radius = active ? 3.0 : 2.0 + edge.intensity * 0.55;
+        const radius = active ? 5.0 : 3.7 + edge.intensity * 0.5;
 
+        // High-contrast white core keeps the dot visible on the dark graph without expensive glow/shadow effects.
         pinballContext.beginPath();
         pinballContext.arc(x, y, radius, 0, Math.PI * 2);
-        pinballContext.fillStyle = active ? "rgba(255,255,255,0.98)" : "rgba(248,250,252,0.82)";
+        pinballContext.fillStyle = active ? "rgba(255,255,255,1)" : "rgba(255,255,255,0.96)";
         pinballContext.fill();
 
-        if (active) {
-          pinballContext.beginPath();
-          pinballContext.arc(x, y, radius + 1.5, 0, Math.PI * 2);
-          pinballContext.strokeStyle = edge.color;
-          pinballContext.globalAlpha = 0.55;
-          pinballContext.lineWidth = 1;
-          pinballContext.stroke();
-          pinballContext.globalAlpha = 1;
-        }
+        // Thin edge-colored outline preserves collaboration-frequency color context at negligible cost.
+        pinballContext.beginPath();
+        pinballContext.arc(x, y, radius + (active ? 1.4 : 0.9), 0, Math.PI * 2);
+        pinballContext.strokeStyle = rgbaFromHex(edge.color, active ? 0.95 : 0.82);
+        pinballContext.lineWidth = active ? 1.5 : 1.1;
+        pinballContext.stroke();
       });
     }
 

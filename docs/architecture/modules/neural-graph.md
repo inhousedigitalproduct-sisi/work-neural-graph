@@ -33,13 +33,15 @@ Node size dapat menggunakan collaborator count, collaborative task count, collab
 
 ## Animation Contract
 
-- Animasi default berupa satu dot kecil yang bergerak **bolak-balik** pada edge, untuk merepresentasikan kolaborasi dua arah.
+- Animasi default berupa satu dot yang bergerak **bolak-balik** pada edge untuk merepresentasikan kolaborasi dua arah.
+- Dot default harus cukup terlihat pada canvas gelap: radius sekitar **3.7-4.2 px** dengan white core dan outline tipis mengikuti warna edge; focus/hover sekitar **5 px**.
 - Tidak memakai streak, gradient, large shadow blur, atau additive glow yang mahal.
 - Maksimum **120 edge** dianimasikan; edge diprioritaskan berdasarkan `shared_task_count` tertinggi.
 - Frame interval adaptif berdasarkan jumlah edge yang dianimasikan.
 - Posisi viewport node di-cache sekali per frame.
+- Koordinat viewport harus divalidasi (`Number.isFinite`) agar satu edge invalid tidak mematikan seluruh animation loop secara diam-diam.
 - Rendering berhenti saat tab browser hidden dan dihormati saat `prefers-reduced-motion` aktif.
-- Hover/focus node hanya menambah highlight ringan pada dot terkait; tidak menambah full-edge glow.
+- Hover/focus node hanya menambah ukuran dan outline ringan pada dot terkait; tidak menambah full-edge glow.
 
 ## Current Risks and Non-standard Code
 
@@ -58,8 +60,8 @@ Node size dapat menggunakan collaborator count, collaborative task count, collab
 
 ## Tests
 
-Coverage utama: `tests/test_collaboration_graph.py`, `test_graph_builder.py`, `test_graph_visualizer.py`, dan `test_pinball_animation.py`. `test_pinball_animation.py` memastikan animation bounded, bidirectional, tanpa heavy gradient/shadow effect, dan pause behavior tetap ada.
+Coverage utama: `tests/test_collaboration_graph.py`, `test_graph_builder.py`, `test_graph_visualizer.py`, dan `test_pinball_animation.py`. `test_pinball_animation.py` memastikan animation bounded, bidirectional, cukup visible, tanpa heavy gradient/shadow effect, pause behavior tetap ada, dan invalid viewport coordinate tidak menjatuhkan animation loop.
 
 ## Change Contract
 
-Setiap perubahan node/edge semantic, filtering, collaboration metric, renderer encoding, interaction, animation, atau performance limit harus meng-update dokumen ini. Efek visual default wajib bounded dan memiliki regression test yang dapat dijalankan tanpa manual inspection sejauh mungkin.
+Setiap perubahan node/edge semantic, filtering, collaboration metric, renderer encoding, interaction, animation, visibility, atau performance limit harus meng-update dokumen ini. Efek visual default wajib bounded dan memiliki regression test yang dapat dijalankan tanpa manual inspection sejauh mungkin.
