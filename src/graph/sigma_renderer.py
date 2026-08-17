@@ -86,28 +86,36 @@ def build_sigma_html(
 <head>
   <meta charset="utf-8" />
   <style>
-    html, body {{ margin:0; padding:0; background:#020617; color:#e2e8f0; font-family:Inter,system-ui,-apple-system,sans-serif; }}
-    .toolbar {{ height:54px; display:flex; align-items:center; gap:10px; padding:0 12px; border:1px solid #1e293b; border-bottom:0; border-radius:12px 12px 0 0; background:#0f172a; }}
+    html, body {{ margin:0; padding:0; background:#020617; color:#e2e8f0; font-family:Inter,system-ui,-apple-system,sans-serif; overflow:hidden; }}
+    .toolbar {{ height:54px; display:flex; align-items:center; gap:10px; padding:0 12px; border:1px solid #1e293b; border-bottom:0; border-radius:12px 12px 0 0; background:#0f172a; box-sizing:border-box; }}
     .toolbar select, .toolbar button {{ height:34px; border-radius:8px; border:1px solid #334155; background:#111827; color:#e2e8f0; padding:0 10px; }}
     .toolbar select {{ min-width:260px; flex:1; }}
     .toolbar button {{ cursor:pointer; }}
     .toolbar .hint {{ color:#64748b; font-size:12px; white-space:nowrap; }}
-    #stage {{ height:570px; position:relative; border:1px solid #1e293b; background:radial-gradient(circle at center,#0f172a 0,#020617 72%); }}
+    #stage {{ height:495px; position:relative; border:1px solid #1e293b; background:radial-gradient(circle at center,#0f172a 0,#020617 72%); box-sizing:border-box; }}
     #sigma-container {{ position:absolute; inset:0; }}
     #tooltip {{ position:absolute; display:none; z-index:8; max-width:340px; pointer-events:none; padding:10px 12px; border:1px solid #334155; border-radius:9px; background:rgba(15,23,42,.97); color:#e2e8f0; font-size:12px; line-height:1.45; box-shadow:0 10px 35px rgba(0,0,0,.35); }}
-    #detail {{ min-height:96px; padding:14px; border:1px solid #1e293b; border-top:0; border-radius:0 0 12px 12px; background:#0f172a; font-size:13px; line-height:1.5; }}
-    .detail-grid {{ display:grid; grid-template-columns:minmax(220px,.8fr) minmax(320px,1.2fr); gap:18px; }}
-    .summary-card {{ border:1px solid #243244; border-radius:10px; padding:12px; background:#111827; }}
+    #detail {{ height:270px; padding:14px; border:1px solid #1e293b; border-top:0; border-radius:0 0 12px 12px; background:#0f172a; font-size:13px; line-height:1.5; box-sizing:border-box; overflow:hidden; }}
+    .detail-grid {{ display:grid; grid-template-columns:minmax(220px,.8fr) minmax(320px,1.2fr); gap:18px; height:100%; }}
+    .summary-card {{ border:1px solid #243244; border-radius:10px; padding:12px; background:#111827; height:100%; box-sizing:border-box; overflow:hidden; }}
     .summary-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin-top:10px; }}
     .metric {{ border:1px solid #253247; border-radius:8px; padding:8px; background:#0b1220; }}
     .metric b {{ display:block; font-size:17px; color:#f8fafc; }}
     .muted {{ color:#94a3b8; }}
     .title {{ color:#f8fafc; font-size:15px; font-weight:700; margin-bottom:4px; }}
     .section-title {{ color:#cbd5e1; font-weight:700; margin-bottom:6px; }}
+    .detail-scroll {{ min-height:0; height:100%; overflow-y:auto; padding-right:6px; }}
     .list-row {{ display:flex; justify-content:space-between; gap:12px; padding:5px 0; border-bottom:1px solid rgba(51,65,85,.45); }}
     .list-row:last-child {{ border-bottom:0; }}
     .pill {{ display:inline-block; margin:4px 4px 0 0; padding:2px 7px; border:1px solid #334155; border-radius:999px; color:#cbd5e1; font-size:11px; }}
-    @media(max-width:760px) {{ .detail-grid {{ grid-template-columns:1fr; }} .toolbar .hint {{ display:none; }} }}
+    @media(max-width:760px) {{
+      #stage {{ height:430px; }}
+      #detail {{ height:335px; overflow-y:auto; }}
+      .detail-grid {{ grid-template-columns:1fr; height:auto; }}
+      .summary-card {{ height:auto; }}
+      .detail-scroll {{ height:auto; overflow:visible; }}
+      .toolbar .hint {{ display:none; }}
+    }}
   </style>
 </head>
 <body>
@@ -165,7 +173,7 @@ def build_sigma_html(
           result.zIndex = 0;
         }} else if (node === focus) {{
           result.color = "#fbbf24";
-          result.labelColor = "#0f172a";
+          result.labelColor = "#f8fafc";
           result.size = attrs.size * 1.25;
           result.zIndex = 2;
         }} else if (focus) {{
@@ -216,7 +224,7 @@ def build_sigma_html(
               <div class="metric"><b>${{Number(a.collaborative_hours).toFixed(2)}}</b><span class="muted">Collaborative hours</span></div>
             </div>
           </div>
-          <div>
+          <div class="detail-scroll">
             <div class="section-title">Top Collaborators</div>
             ${{topCollaboratorRows(a.top_collaborators)}}
             <div class="section-title" style="margin-top:12px">Dominant Tasks</div>
