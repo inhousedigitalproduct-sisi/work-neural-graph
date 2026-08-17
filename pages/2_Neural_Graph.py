@@ -16,6 +16,141 @@ config = get_config()
 dataset_service = TimesheetDataService(config.db_path)
 analytics_service = AnalyticsService(config.db_path)
 
+NEURON_SIGNAL_STYLE = """
+    #neuron-signal-layer {
+      position:absolute;
+      inset:0;
+      width:100%;
+      height:100%;
+      z-index:6;
+      pointer-events:none;
+    }
+"""
+
+NEURON_SIGNAL_SCRIPT = r"""
+    const neuronLayer = document.getElementById("neuron-signal-layer");
+    const neuronStage = document.getElementById("stage");
+    const neuronContext = neuronLayer ? neuronLayer.getContext("2d") : null;
+    const prefersReducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false;
+    let neuronDpr = 1;
+    let lastNeuronFrame = 0;
+
+    function hexToRgba(hex, alpha) {
+      const normalized = String(hex || "#fb923c").replace("#", "");
+      if (!/^[0-9a-fA-F]{6}$/.test(normalized)) return `rgba(251,146,60,${alpha})`;
+      const value = parseInt(normalized, 16);
+      const r = (value >> 16) & 255;
+      const g = (value >> 8) & 255;
+      const b = value & 255;
+      return `rgba(${r},${g},${b},${alpha})`;
+    }
+
+    function resizeNeuronLayer() {
+      if (!neuronLayer || !neuronStage || !neuronContext) return;
+      const rect = neuronStage.getBoundingClientRect();
+      neuronDpr = Math.min(window.devicePixelRatio || 1, 2);
+      const width = Math.max(1, Math.round(rect.width * neuronDpr));
+      const height = Math.max(1, Math.round(rect.height * neuronDpr));
+      if (neuronLayer.width !== width || neuronLayer.height !== height) {
+        neuronLayer.width = width;
+        neuronLayer.height = height;
+        neuronLayer.style.width = `${rect.width}px`;
+        neuronLayer.style.height = `${rect.height}px`;
+      }
+      neuronContext.setTransform(neuronDpr, 0, 0, neuronDpr, 0, 0);
+    }
+
+    function edgePhase(edgeKey) {
+      let hash = 0;
+      const text = String(edgeKey);
+      for (let i = 0; i < text.length; i += 1) hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+      return Math.abs(hash % 1000) / 1000;
+    }
+
+    function collaborationRatio(value) {
+      const scale = data.collaboration_scale || {min: 0, max: 0};
+      const low = Number(scale.min || 0);
+      const high = Number(scale.max || 0);
+      if (high <= low) return 0.55;
+      return Math.max(0, Math.min(1, (Number(value || 0) - low) / (high - low)));
+    }
+
+    function drawNeuronSignals(now) {
+      if (!neuronContext || !neuronLayer || !neuronStage) return;
+      window.requestAnimationFrame(drawNeuronSignals);
+
+      // ~30 FPS is enough for a soft pulse and keeps dense graphs responsive.
+      if (now - lastNeuronFrame < 32) return;
+      lastNeuronFrame = now;
+      resizeNeuronLayer();
+
+      const rect = neuronStage.getBoundingClientRect();
+      neuronContext.clearRect(0, 0, rect.width, rect.height);
+      const focusNode = selectedNode || hoveredNode;
+      if (!focusNode || !graph.hasNode(focusNode)) return;
+
+      graph.edges(focusNode).forEach(edgeKey => {
+        const attrs = graph.getEdgeAttributes(edgeKey);
+        const [source, target] = graph.extremities(edgeKey);
+        const sourceAttrs = graph.getNodeAttributes(source);
+        const targetAttrs = graph.getNodeAttributes(target);
+        const sourcePoint = renderer.graphToViewport({x: sourceAttrs.x, y: sourceAttrs.y});
+        const targetPoint = renderer.graphToViewport({x: targetAttrs.x, y: targetAttrs.y});
+        const count = Number(attrs.collaboration_count || attrs.shared_task_count || 1);
+        const intensity = collaborationRatio(count);
+        const signalColor = attrs.color || "#fb923c";
+
+        neuronContext.save();
+        neuronContext.beginPath();
+        neuronContext.moveTo(sourcePoint.x, sourcePoint.y);
+        neuronContext.lineTo(targetPoint.x, targetPoint.y);
+        neuronContext.lineCap = "round";
+        neuronContext.lineWidth = 1.1 + intensity * 1.9;
+        neuronContext.strokeStyle = hexToRgba(signalColor, 0.12 + intensity * 0.20);
+        neuronContext.shadowColor = signalColor;
+        neuronContext.shadowBlur = 8 + intensity * 10;
+        neuronContext.stroke();
+
+        if (!prefersReducedMotion) {
+          const speed = 0.00020 + intensity * 0.00016;
+          const phase = (now * speed + edgePhase(edgeKey)) % 1;
+          // Triangle wave: 0 -> 1 -> 0 creates a bidirectional neuron-like pulse.
+          const travel = 1 - Math.abs(1 - 2 * phase);
+          const x = sourcePoint.x + (targetPoint.x - sourcePoint.x) * travel;
+          const y = sourcePoint.y + (targetPoint.y - sourcePoint.y) * travel;
+          const radius = 2.0 + intensity * 1.7;
+
+          neuronContext.beginPath();
+          neuronContext.arc(x, y, radius, 0, Math.PI * 2);
+          neuronContext.fillStyle = hexToRgba("#fff7ed", 0.88);
+          neuronContext.shadowColor = signalColor;
+          neuronContext.shadowBlur = 12 + intensity * 14;
+          neuronContext.fill();
+        }
+        neuronContext.restore();
+      });
+    }
+
+    if (neuronLayer && neuronStage && neuronContext) {
+      resizeNeuronLayer();
+      new ResizeObserver(resizeNeuronLayer).observe(neuronStage);
+      window.requestAnimationFrame(drawNeuronSignals);
+    }
+"""
+
+
+def inject_neuron_signal_effect(html: str) -> str:
+    """Add a lightweight animated pulse overlay to active Sigma collaboration edges."""
+    html = html.replace("</style>", f"{NEURON_SIGNAL_STYLE}\n  </style>", 1)
+    html = html.replace(
+        '<div id="sigma-container"></div>',
+        '<div id="sigma-container"></div>\n    <canvas id="neuron-signal-layer" aria-hidden="true"></canvas>',
+        1,
+    )
+    html = html.replace("  </script>", f"{NEURON_SIGNAL_SCRIPT}\n  </script>", 1)
+    return html
+
+
 st.title("Neural Graph — Kolaborasi")
 st.caption(
     "Eksplorasi hubungan antar-karyawan berdasarkan task yang sama. "
@@ -149,8 +284,8 @@ for source, target in list(display_graph.edges):
 
 st.subheader("Peta kolaborasi interaktif")
 st.caption(
-    "Klik node untuk fokus ke karyawan dan kolaboratornya, drag node untuk mengatur posisi, scroll untuk zoom, "
-    "dan hover garis untuk melihat task/project bersama. Bar scale menunjukkan frekuensi kolaborasi."
+    "Klik atau hover node untuk mengaktifkan pulse seperti sinyal neuron pada relasi aktif, drag node untuk mengatur posisi, "
+    "scroll untuk zoom, dan hover garis untuk melihat task/project bersama. Bar scale menunjukkan frekuensi kolaborasi."
 )
 if result.summary.collaboration_links == 0:
     st.info("Tidak ada task yang dikerjakan oleh lebih dari satu karyawan pada scope aktif. Node tetap ditampilkan tanpa garis.")
@@ -163,6 +298,7 @@ sigma_html = build_sigma_html(
     edge_width_metric="shared_task_count",
     show_labels=show_labels,
 )
+sigma_html = inject_neuron_signal_effect(sigma_html)
 components.html(sigma_html, height=835, scrolling=False)
 
 with st.expander("Cara membaca Collaboration Graph", expanded=False):
@@ -172,10 +308,10 @@ with st.expander("Cara membaca Collaboration Graph", expanded=False):
 - **Garis = dua karyawan mengerjakan `task_key` yang sama** pada Nama Project/Range Date aktif, walaupun tanggal pengerjaannya berbeda.
 - **Warna & ketebalan garis = frekuensi kolaborasi**, dihitung dari jumlah task bersama untuk pasangan karyawan tersebut.
 - **Bar scale** menunjukkan rentang frekuensi kolaborasi dari paling sedikit ke paling banyak pada scope aktif.
-- **Klik node** untuk meredupkan node di luar lingkaran kolaborasinya dan melihat detail karyawan.
+- **Klik atau hover node** mengaktifkan soft glow dan pulse bolak-balik pada garis yang terhubung, seperti impuls neuron. Intensitasnya mengikuti frekuensi kolaborasi.
 - **Hover garis** untuk melihat task, project, dan total jam yang menjadi dasar relasi.
 - **Ukuran node** dapat diganti dari sidebar.
-- Warna node menunjukkan community/cluster kolaborasi dan bukan penilaian performa individu.
+- Animasi adalah bantuan visual untuk menonjolkan relasi aktif; warna node tetap menunjukkan community/cluster dan bukan penilaian performa individu.
 """
     )
 
