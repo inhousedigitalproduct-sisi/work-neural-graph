@@ -15,10 +15,10 @@ Active dataset
  -> threshold minimum shared tasks
  -> Sigma payload/layout/community
  -> interactive Sigma.js renderer
- -> optional Interactive neuron impulse overlay
+ -> lightweight bidirectional pinball-dot overlay
 ```
 
-Node size dapat menggunakan collaborator count, collaborative task count, collaborative hours, atau project count. Edge color/thickness menggunakan jumlah task bersama. Interactive impulse adalah visual aid dan tidak mengubah semantic data.
+Node size dapat menggunakan collaborator count, collaborative task count, collaborative hours, atau project count. Edge color/thickness menggunakan jumlah task bersama. Dot animation adalah visual aid dan tidak mengubah semantic data.
 
 ## Entry Points and Dependencies
 
@@ -26,13 +26,23 @@ Node size dapat menggunakan collaborator count, collaborative task count, collab
 - Filtering contract: `src/graph/builder.py::GraphFilterConfig/apply_graph_filters`.
 - Collaboration model: `src/graph/collaboration.py`.
 - Main renderer: `src/graph/sigma_renderer.py`.
+- Lightweight animation helper: `src/graph/pinball_animation.py`.
 - Dataset: `TimesheetDataService`.
 - Analytics summary: `AnalyticsService`.
 - Runtime browser dependencies: Graphology + Sigma.js dari CDN.
 
+## Animation Contract
+
+- Animasi default berupa satu dot kecil yang bergerak **bolak-balik** pada edge, untuk merepresentasikan kolaborasi dua arah.
+- Tidak memakai streak, gradient, large shadow blur, atau additive glow yang mahal.
+- Maksimum **120 edge** dianimasikan; edge diprioritaskan berdasarkan `shared_task_count` tertinggi.
+- Frame interval adaptif berdasarkan jumlah edge yang dianimasikan.
+- Posisi viewport node di-cache sekali per frame.
+- Rendering berhenti saat tab browser hidden dan dihormati saat `prefers-reduced-motion` aktif.
+- Hover/focus node hanya menambah highlight ringan pada dot terkait; tidak menambah full-edge glow.
+
 ## Current Risks and Non-standard Code
 
-- Neuron impulse CSS/JavaScript di-inject dari Streamlit page ke HTML renderer; presentation concern tersebar di dua layer.
 - `src/graph/visualizer.py` dan `collaboration_visualizer.py` masih hidup bersama Sigma renderer; perlu usage audit agar renderer legacy tidak kembali dipakai tanpa sengaja.
 - Page menggunakan `AnalyticsService` yang saat ini membangun legacy `GraphService/GraphBuilder` untuk analytics snapshot, walaupun visual graph sudah collaboration-based.
 - Sigma HTML adalah large Python f-string berisi CSS/JS, sehingga raw string escaping dan regression risk tinggi.
@@ -40,16 +50,16 @@ Node size dapat menggunakan collaborator count, collaborative task count, collab
 
 ## Refactor Recommendations
 
-1. Pindahkan Interactive impulse menjadi capability di `sigma_renderer.py` atau dedicated `sigma_interactions.py` dengan parameter `interactive`.
+1. Pertahankan animation concern di helper khusus, bukan di Streamlit page.
 2. Pisahkan payload construction dari HTML template agar dapat unit-test secara langsung.
 3. Decouple period KPI dari legacy date graph builder.
 4. Hapus/deprecate renderer yang tidak digunakan setelah repository-wide usage search.
-5. Tambahkan renderer contract tests untuk legend scale, interactive disabled path, bounded animation settings, dan payload edge metric.
+5. Tambahkan browser-level performance smoke test jika tooling frontend tersedia.
 
 ## Tests
 
-Current coverage utama: `tests/test_collaboration_graph.py`, `test_graph_builder.py`, dan `test_graph_visualizer.py`. Coverage browser-level Sigma/interactions masih terbatas.
+Coverage utama: `tests/test_collaboration_graph.py`, `test_graph_builder.py`, `test_graph_visualizer.py`, dan `test_pinball_animation.py`. `test_pinball_animation.py` memastikan animation bounded, bidirectional, tanpa heavy gradient/shadow effect, dan pause behavior tetap ada.
 
 ## Change Contract
 
-Setiap perubahan node/edge semantic, filtering, collaboration metric, renderer encoding, interaction, animation, atau performance limit harus meng-update dokumen ini. Behavior visual baru harus tetap opt-in bila menambah CPU/GPU cost dan harus memiliki regression test yang dapat dijalankan tanpa manual inspection sejauh mungkin.
+Setiap perubahan node/edge semantic, filtering, collaboration metric, renderer encoding, interaction, animation, atau performance limit harus meng-update dokumen ini. Efek visual default wajib bounded dan memiliki regression test yang dapat dijalankan tanpa manual inspection sejauh mungkin.
