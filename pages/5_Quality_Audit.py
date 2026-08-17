@@ -26,6 +26,16 @@ dataset_service = TimesheetDataService(config.db_path)
 DEFAULT_FUZZY_THRESHOLD = 0.90
 
 
+ISSUE_METRICS = [
+    ("copy_rate", "Copy / Near-copy"),
+    ("exact_copy_rate", "Exact Copy"),
+    ("minimal_note_rate", "Note Minim"),
+    ("overlap_rate", "Overlap"),
+    ("duration_issue_rate", "Duration Issue"),
+    ("repeated_long_rate", "Repeated & Long"),
+]
+
+
 def dataset_signature(dataframe: pd.DataFrame) -> tuple:
     if dataframe.empty:
         return (0,)
@@ -140,6 +150,10 @@ def build_score_trend_figure(trend: pd.DataFrame) -> go.Figure:
         y=trend["effectiveness"],
         mode="lines+markers",
         name="Overall Quality",
+        line={"width": 4},
+        marker={"size": 9},
+        fill="tozeroy",
+        fillcolor="rgba(148,163,184,0.08)",
         hovertemplate="%{x|%d %b %Y}<br>Overall Quality: %{y:.1f}<extra></extra>",
     ))
     figure.add_trace(go.Scatter(
@@ -147,10 +161,12 @@ def build_score_trend_figure(trend: pd.DataFrame) -> go.Figure:
         y=trend["writing_quality"],
         mode="lines+markers",
         name="Writing Quality",
+        line={"width": 2, "dash": "dot"},
+        marker={"size": 7},
         hovertemplate="%{x|%d %b %Y}<br>Writing Quality: %{y:.1f}<extra></extra>",
     ))
     figure.update_layout(
-        height=380,
+        height=390,
         margin={"l": 20, "r": 20, "t": 20, "b": 20},
         xaxis_title="Periode",
         yaxis_title="Score (0–100)",
@@ -161,31 +177,47 @@ def build_score_trend_figure(trend: pd.DataFrame) -> go.Figure:
     return figure
 
 
-def build_issue_trend_figure(trend: pd.DataFrame) -> go.Figure:
-    figure = go.Figure()
-    metrics = [
-        ("copy_rate", "Copy / Near-copy"),
-        ("exact_copy_rate", "Exact Copy"),
-        ("minimal_note_rate", "Note Minim"),
-        ("overlap_rate", "Overlap"),
-        ("duration_issue_rate", "Duration Issue"),
-        ("repeated_long_rate", "Repeated & Long"),
-    ]
-    for column, label in metrics:
-        figure.add_trace(go.Scatter(
-            x=trend["period_start"],
-            y=trend[column],
-            mode="lines+markers",
-            name=label,
-            hovertemplate=f"%{{x|%d %b %Y}}<br>{label}: %{{y:.1f}}%<extra></extra>",
-        ))
+def build_issue_heatmap(trend: pd.DataFrame) -> go.Figure:
+    labels = [label for _, label in ISSUE_METRICS]
+    values = [[float(value) for value in trend[column].tolist()] for column, _ in ISSUE_METRICS]
+    text = [[f"{value:.1f}%" for value in row] for row in values]
+    figure = go.Figure(go.Heatmap(
+        z=values,
+        x=trend["period_start"],
+        y=labels,
+        text=text,
+        texttemplate="%{text}",
+        hovertemplate="%{y}<br>%{x|%d %b %Y}<br>%{z:.1f}%<extra></extra>",
+        colorbar={"title": "Issue rate %"},
+        colorscale="YlOrRd",
+        zmin=0,
+    ))
     figure.update_layout(
-        height=470,
-        margin={"l": 20, "r": 20, "t": 20, "b": 20},
+        height=390,
+        margin={"l": 20, "r": 20, "t": 10, "b": 20},
         xaxis_title="Periode",
-        yaxis_title="Rate (%)",
-        hovermode="x unified",
-        legend={"orientation": "h", "y": 1.12},
+        yaxis_title="",
+    )
+    return figure
+
+
+def build_issue_focus_figure(trend: pd.DataFrame, column: str, label: str) -> go.Figure:
+    figure = go.Figure(go.Scatter(
+        x=trend["period_start"],
+        y=trend[column],
+        mode="lines+markers",
+        line={"width": 3},
+        marker={"size": 9},
+        fill="tozeroy",
+        fillcolor="rgba(148,163,184,0.08)",
+        hovertemplate=f"%{{x|%d %b %Y}}<br>{label}: %{{y:.1f}}%<extra></extra>",
+    ))
+    figure.update_layout(
+        height=300,
+        margin={"l": 20, "r": 20, "t": 10, "b": 20},
+        xaxis_title="Periode",
+        yaxis_title=f"{label} (%)",
+        hovermode="x",
     )
     return figure
 
@@ -282,8 +314,8 @@ with snapshot_tab:
 with trend_tab:
     st.subheader("Quality Trend")
     st.caption(
-        "Setiap titik dihitung ulang dari data timesheet pada periodenya agar rate tetap comparable. "
-        "Untuk issue rate, semakin rendah umumnya semakin baik; untuk score, semakin tinggi semakin baik."
+        "Setiap periode dihitung ulang dari data timesheet agar rate comparable. "
+        "Semakin rendah issue rate umumnya semakin baik; semakin tinggi quality score semakin baik."
     )
     grouping = st.segmented_control(
         "Grouping",
@@ -323,11 +355,29 @@ with trend_tab:
             metric_delta(trend, "writing_quality"),
         )
 
-        st.markdown("#### Trend score")
+        st.markdown("#### Overall Quality Trend")
+        st.caption("Garis utama menunjukkan arah kualitas keseluruhan; garis putus-putus menunjukkan kualitas penulisan Note.")
         st.plotly_chart(build_score_trend_figure(trend), use_container_width=True)
 
-        st.markdown("#### Trend issue rate")
-        st.plotly_chart(build_issue_trend_figure(trend), use_container_width=True)
+        st.markdown("#### Issue Trend Heatmap")
+        st.caption("Warna yang lebih kuat menunjukkan issue rate lebih tinggi. Gunakan heatmap untuk menemukan periode dan jenis masalah yang paling dominan.")
+        st.plotly_chart(build_issue_heatmap(trend), use_container_width=True)
+
+        metric_options = {label: column for column, label in ISSUE_METRICS}
+        focused_label = st.selectbox(
+            "Lihat trend issue secara detail",
+            options=list(metric_options),
+            key="quality_trend_focus_metric",
+        )
+        focused_column = metric_options[focused_label]
+        focus_delta = metric_delta(trend, focused_column)
+        direction = "stabil" if focus_delta in (None, 0) else "menurun" if focus_delta < 0 else "meningkat"
+        st.caption(
+            f"Periode terbaru: **{float(latest[focused_column]):.1f}%**. "
+            f"Dibanding periode sebelumnya: **{direction}**"
+            + ("." if focus_delta is None else f" ({focus_delta:+.1f} pp).")
+        )
+        st.plotly_chart(build_issue_focus_figure(trend, focused_column, focused_label), use_container_width=True)
 
         with st.expander("Data trend lengkap", expanded=False):
             trend_view = trend.rename(columns={
