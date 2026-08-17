@@ -33,6 +33,7 @@ NEURON_SIGNAL_SCRIPT = r"""
     const neuronStage = document.getElementById("stage");
     const neuronContext = neuronLayer ? neuronLayer.getContext("2d") : null;
     const prefersReducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false;
+    const MAX_AMBIENT_EDGES = 160;
     let neuronDpr = 1;
     let lastNeuronFrame = 0;
 
@@ -49,7 +50,7 @@ NEURON_SIGNAL_SCRIPT = r"""
     function resizeNeuronLayer() {
       if (!neuronLayer || !neuronStage || !neuronContext) return;
       const rect = neuronStage.getBoundingClientRect();
-      neuronDpr = Math.min(window.devicePixelRatio || 1, 2);
+      neuronDpr = Math.min(window.devicePixelRatio || 1, 1.5);
       const width = Math.max(1, Math.round(rect.width * neuronDpr));
       const height = Math.max(1, Math.round(rect.height * neuronDpr));
       if (neuronLayer.width !== width || neuronLayer.height !== height) {
@@ -76,6 +77,30 @@ NEURON_SIGNAL_SCRIPT = r"""
       return Math.max(0, Math.min(1, (Number(value || 0) - low) / (high - low)));
     }
 
+    const signalEdges = data.edges.map(edge => {
+      const count = Number(edge.collaboration_count || edge.shared_task_count || 1);
+      return {
+        key: edge.id,
+        source: edge.source,
+        target: edge.target,
+        color: edge.color || "#fb923c",
+        count,
+        intensity: collaborationRatio(count),
+        phase: edgePhase(edge.id),
+      };
+    }).sort((a, b) => b.count - a.count);
+
+    const ambientEdges = signalEdges.slice(0, MAX_AMBIENT_EDGES);
+    const edgesByNode = new Map();
+    signalEdges.forEach(edge => {
+      if (!edgesByNode.has(edge.source)) edgesByNode.set(edge.source, []);
+      if (!edgesByNode.has(edge.target)) edgesByNode.set(edge.target, []);
+      edgesByNode.get(edge.source).push(edge);
+      edgesByNode.get(edge.target).push(edge);
+    });
+
+    const frameInterval = signalEdges.length > 180 ? 62 : signalEdges.length > 90 ? 50 : 40;
+
     function pointOnEdge(sourcePoint, targetPoint, t) {
       return {
         x: sourcePoint.x + (targetPoint.x - sourcePoint.x) * t,
@@ -85,26 +110,51 @@ NEURON_SIGNAL_SCRIPT = r"""
 
     function drawImpulse(sourcePoint, targetPoint, headT, direction, length, color, intensity, active) {
       const tailT = Math.max(0, Math.min(1, headT - direction * length));
+      const coreT = Math.max(0, Math.min(1, headT - direction * length * 0.34));
       const tail = pointOnEdge(sourcePoint, targetPoint, tailT);
+      const core = pointOnEdge(sourcePoint, targetPoint, coreT);
       const head = pointOnEdge(sourcePoint, targetPoint, headT);
-      const gradient = neuronContext.createLinearGradient(tail.x, tail.y, head.x, head.y);
-      const bodyAlpha = active ? 0.36 + intensity * 0.28 : 0.10 + intensity * 0.10;
-      const headAlpha = active ? 0.98 : 0.48 + intensity * 0.16;
-
-      gradient.addColorStop(0, hexToRgba(color, 0));
-      gradient.addColorStop(0.42, hexToRgba(color, bodyAlpha * 0.45));
-      gradient.addColorStop(0.78, hexToRgba(color, bodyAlpha));
-      gradient.addColorStop(1, hexToRgba("#fff7ed", headAlpha));
 
       neuronContext.save();
+      neuronContext.globalCompositeOperation = "lighter";
+      neuronContext.lineCap = "round";
+
+      // Broad luminous body. Strong shadow creates the electrical/neuron impression without a moving orb.
       neuronContext.beginPath();
       neuronContext.moveTo(tail.x, tail.y);
       neuronContext.lineTo(head.x, head.y);
-      neuronContext.lineCap = "round";
-      neuronContext.lineWidth = active ? 2.0 + intensity * 2.0 : 0.85 + intensity * 0.75;
-      neuronContext.strokeStyle = gradient;
+      neuronContext.lineWidth = active ? 3.0 + intensity * 2.5 : 1.15 + intensity * 0.95;
+      neuronContext.strokeStyle = hexToRgba(
+        color,
+        active ? 0.64 + intensity * 0.22 : 0.28 + intensity * 0.18,
+      );
       neuronContext.shadowColor = color;
-      neuronContext.shadowBlur = active ? 10 + intensity * 14 : 4 + intensity * 5;
+      neuronContext.shadowBlur = active ? 24 + intensity * 18 : 10 + intensity * 8;
+      neuronContext.stroke();
+
+      // Short white-hot core at the head makes the streak eye-catching while keeping it impulse-shaped.
+      neuronContext.beginPath();
+      neuronContext.moveTo(core.x, core.y);
+      neuronContext.lineTo(head.x, head.y);
+      neuronContext.lineWidth = active ? 1.55 + intensity * 0.85 : 0.72 + intensity * 0.42;
+      neuronContext.strokeStyle = hexToRgba("#fff7ed", active ? 0.98 : 0.76);
+      neuronContext.shadowColor = "#fff7ed";
+      neuronContext.shadowBlur = active ? 16 + intensity * 12 : 7 + intensity * 5;
+      neuronContext.stroke();
+      neuronContext.restore();
+    }
+
+    function drawActiveEdgeGlow(sourcePoint, targetPoint, color, intensity) {
+      neuronContext.save();
+      neuronContext.globalCompositeOperation = "lighter";
+      neuronContext.beginPath();
+      neuronContext.moveTo(sourcePoint.x, sourcePoint.y);
+      neuronContext.lineTo(targetPoint.x, targetPoint.y);
+      neuronContext.lineCap = "round";
+      neuronContext.lineWidth = 1.6 + intensity * 1.8;
+      neuronContext.strokeStyle = hexToRgba(color, 0.22 + intensity * 0.18);
+      neuronContext.shadowColor = color;
+      neuronContext.shadowBlur = 14 + intensity * 14;
       neuronContext.stroke();
       neuronContext.restore();
     }
@@ -112,9 +162,8 @@ NEURON_SIGNAL_SCRIPT = r"""
     function drawNeuronSignals(now) {
       if (!neuronContext || !neuronLayer || !neuronStage) return;
       window.requestAnimationFrame(drawNeuronSignals);
-
-      // Ambient animation runs continuously; ~30 FPS keeps dense graphs responsive.
-      if (now - lastNeuronFrame < 32) return;
+      if (document.hidden || prefersReducedMotion) return;
+      if (now - lastNeuronFrame < frameInterval) return;
       lastNeuronFrame = now;
       resizeNeuronLayer();
 
@@ -122,50 +171,40 @@ NEURON_SIGNAL_SCRIPT = r"""
       neuronContext.clearRect(0, 0, rect.width, rect.height);
       const focusNode = selectedNode || hoveredNode;
       const hasFocus = Boolean(focusNode && graph.hasNode(focusNode));
+      const activeEdges = hasFocus ? (edgesByNode.get(focusNode) || []) : [];
+      const activeKeys = new Set(activeEdges.map(edge => edge.key));
+      const edgesToDraw = hasFocus
+        ? ambientEdges.filter(edge => !activeKeys.has(edge.key)).concat(activeEdges)
+        : ambientEdges;
 
-      graph.edges().forEach(edgeKey => {
-        const attrs = graph.getEdgeAttributes(edgeKey);
-        const [source, target] = graph.extremities(edgeKey);
-        const sourceAttrs = graph.getNodeAttributes(source);
-        const targetAttrs = graph.getNodeAttributes(target);
-        const sourcePoint = renderer.graphToViewport({x: sourceAttrs.x, y: sourceAttrs.y});
-        const targetPoint = renderer.graphToViewport({x: targetAttrs.x, y: targetAttrs.y});
-        const count = Number(attrs.collaboration_count || attrs.shared_task_count || 1);
-        const intensity = collaborationRatio(count);
-        const signalColor = attrs.color || "#fb923c";
-        const active = hasFocus && (source === focusNode || target === focusNode);
+      // A node can belong to many edges. Cache viewport conversion once per node, per frame.
+      const pointCache = new Map();
+      const viewportPoint = nodeId => {
+        if (pointCache.has(nodeId)) return pointCache.get(nodeId);
+        const attrs = graph.getNodeAttributes(nodeId);
+        const point = renderer.graphToViewport({x: attrs.x, y: attrs.y});
+        pointCache.set(nodeId, point);
+        return point;
+      };
 
-        // Focused relations receive a full-edge electrical glow. Other edges keep a faint ambient presence.
-        neuronContext.save();
-        neuronContext.beginPath();
-        neuronContext.moveTo(sourcePoint.x, sourcePoint.y);
-        neuronContext.lineTo(targetPoint.x, targetPoint.y);
-        neuronContext.lineCap = "round";
-        neuronContext.lineWidth = active ? 1.3 + intensity * 1.8 : 0.45 + intensity * 0.45;
-        neuronContext.strokeStyle = hexToRgba(
-          signalColor,
-          active ? 0.16 + intensity * 0.18 : hasFocus ? 0.018 : 0.035 + intensity * 0.025,
-        );
-        neuronContext.shadowColor = signalColor;
-        neuronContext.shadowBlur = active ? 7 + intensity * 10 : 2 + intensity * 3;
-        neuronContext.stroke();
-        neuronContext.restore();
+      edgesToDraw.forEach(edge => {
+        const sourcePoint = viewportPoint(edge.source);
+        const targetPoint = viewportPoint(edge.target);
+        const active = activeKeys.has(edge.key);
 
-        if (prefersReducedMotion) return;
+        if (active) drawActiveEdgeGlow(sourcePoint, targetPoint, edge.color, edge.intensity);
 
-        const phaseOffset = edgePhase(edgeKey);
         const speed = active
-          ? 0.00036 + intensity * 0.00020
+          ? 0.00038 + edge.intensity * 0.00020
           : hasFocus
-            ? 0.00008 + intensity * 0.00004
-            : 0.00013 + intensity * 0.00007;
-        const cycle = now * speed + phaseOffset;
+            ? 0.000075 + edge.intensity * 0.000035
+            : 0.00012 + edge.intensity * 0.00006;
+        const cycle = now * speed + edge.phase;
         const cycleIndex = Math.floor(cycle);
         const progress = cycle - cycleIndex;
-        // Alternate propagation direction per cycle without drawing an orb that visibly bounces.
-        const direction = (cycleIndex + Math.floor(phaseOffset * 10)) % 2 === 0 ? 1 : -1;
+        const direction = (cycleIndex + Math.floor(edge.phase * 10)) % 2 === 0 ? 1 : -1;
         const headT = direction === 1 ? progress : 1 - progress;
-        const length = active ? 0.15 + intensity * 0.08 : 0.075 + intensity * 0.045;
+        const length = active ? 0.18 + edge.intensity * 0.08 : 0.09 + edge.intensity * 0.05;
 
         drawImpulse(
           sourcePoint,
@@ -173,14 +212,14 @@ NEURON_SIGNAL_SCRIPT = r"""
           headT,
           direction,
           length,
-          signalColor,
-          intensity,
+          edge.color,
+          edge.intensity,
           active,
         );
       });
     }
 
-    if (neuronLayer && neuronStage && neuronContext) {
+    if (neuronLayer && neuronStage && neuronContext && !prefersReducedMotion) {
       resizeNeuronLayer();
       new ResizeObserver(resizeNeuronLayer).observe(neuronStage);
       window.requestAnimationFrame(drawNeuronSignals);
@@ -189,7 +228,7 @@ NEURON_SIGNAL_SCRIPT = r"""
 
 
 def inject_neuron_signal_effect(html: str) -> str:
-    """Add ambient and focus-strengthened neuron impulse streaks to Sigma collaboration edges."""
+    """Add optimized ambient/focus neuron impulse streaks to Sigma collaboration edges."""
     html = html.replace("</style>", f"{NEURON_SIGNAL_STYLE}\n  </style>", 1)
     html = html.replace(
         '<div id="sigma-container"></div>',
@@ -295,6 +334,17 @@ with st.sidebar:
         key="neural_graph_node_size_metric",
     )
     st.caption("Warna & ketebalan garis mengikuti frekuensi kolaborasi (jumlah task bersama).")
+    interactive = st.toggle(
+        "Interactive",
+        value=False,
+        key="neural_graph_interactive",
+        help="ON menampilkan impuls neuron. OFF mematikan animasi untuk performa paling ringan.",
+    )
+    st.caption(
+        "Impuls neuron ON — ambient + focus glow."
+        if interactive
+        else "Impuls neuron OFF — mode performa ringan."
+    )
     show_labels = st.toggle(
         "Tampilkan nama karyawan",
         value=summary.employees <= 40,
@@ -332,10 +382,15 @@ for source, target in list(display_graph.edges):
         display_graph.remove_edge(source, target)
 
 st.subheader("Peta kolaborasi interaktif")
-st.caption(
-    "Impuls neuron mengalir otomatis pada seluruh relasi. Hover atau klik node untuk memperkuat impuls pada relasi aktif, "
-    "drag node untuk mengatur posisi, scroll untuk zoom, dan hover garis untuk melihat task/project bersama."
-)
+if interactive:
+    st.caption(
+        "Interactive ON: impuls neuron yang lebih bercahaya mengalir otomatis pada relasi terkuat; hover atau klik node "
+        "memperkuat seluruh impuls relasi node tersebut. Pada graph padat, ambient animation dibatasi otomatis demi performa."
+    )
+else:
+    st.caption(
+        "Interactive OFF: graph tetap dapat di-hover, klik, drag, dan zoom tanpa overlay impuls agar penggunaan GPU/CPU lebih ringan."
+    )
 if result.summary.collaboration_links == 0:
     st.info("Tidak ada task yang dikerjakan oleh lebih dari satu karyawan pada scope aktif. Node tetap ditampilkan tanpa garis.")
 
@@ -347,7 +402,8 @@ sigma_html = build_sigma_html(
     edge_width_metric="shared_task_count",
     show_labels=show_labels,
 )
-sigma_html = inject_neuron_signal_effect(sigma_html)
+if interactive:
+    sigma_html = inject_neuron_signal_effect(sigma_html)
 components.html(sigma_html, height=835, scrolling=False)
 
 with st.expander("Cara membaca Collaboration Graph", expanded=False):
@@ -357,8 +413,9 @@ with st.expander("Cara membaca Collaboration Graph", expanded=False):
 - **Garis = dua karyawan mengerjakan `task_key` yang sama** pada Nama Project/Range Date aktif, walaupun tanggal pengerjaannya berbeda.
 - **Warna & ketebalan garis = frekuensi kolaborasi**, dihitung dari jumlah task bersama untuk pasangan karyawan tersebut.
 - **Bar scale** menunjukkan rentang frekuensi kolaborasi dari paling sedikit ke paling banyak pada scope aktif.
-- **Impuls pendek mengalir otomatis pada semua garis** sebagai ambient signal; bentuknya berupa streak dengan tail, bukan titik/bola bergerak.
-- **Klik atau hover node** memperkuat glow, panjang, dan kecepatan impuls pada garis yang terhubung. Intensitas tetap mengikuti frekuensi kolaborasi.
+- Toggle **Interactive** mengaktifkan atau mematikan overlay impuls neuron. Default **OFF** untuk menjaga performa.
+- Saat **Interactive ON**, streak impuls dibuat lebih bercahaya; hover/klik node memperkuat glow dan kecepatan pada seluruh relasi node tersebut.
+- Pada graph yang sangat padat, ambient impulse memprioritaskan relasi kolaborasi terkuat; relasi node yang sedang difokuskan tetap dianimasikan seluruhnya.
 - **Hover garis** untuk melihat task, project, dan total jam yang menjadi dasar relasi.
 - **Ukuran node** dapat diganti dari sidebar.
 - Animasi adalah bantuan visual untuk menonjolkan pola relasi; warna node tetap menunjukkan community/cluster dan bukan penilaian performa individu.
