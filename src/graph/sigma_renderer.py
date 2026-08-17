@@ -1,13 +1,45 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
 import networkx as nx
 import pandas as pd
 
 
-def _scaled(values: pd.Series, minimum: float, maximum: float) -> dict[str, float]:
+COMMUNITY_COLORS = [
+    "#60a5fa",
+    "#34d399",
+    "#f472b6",
+    "#a78bfa",
+    "#fb923c",
+    "#22d3ee",
+    "#facc15",
+    "#4ade80",
+    "#c084fc",
+    "#fb7185",
+]
+ISOLATED_COLOR = "#475569"
+
+
+def _sqrt_scaled(values: pd.Series, minimum: float = 5.5, maximum: float = 14.0) -> dict[str, float]:
+    numeric = pd.to_numeric(values, errors="coerce").fillna(0.0).clip(lower=0.0)
+    if numeric.empty:
+        return {}
+    transformed = numeric.map(math.sqrt)
+    low = float(transformed.min())
+    high = float(transformed.max())
+    if high <= low:
+        midpoint = (minimum + maximum) / 2
+        return {str(index): midpoint for index in transformed.index}
+    return {
+        str(index): minimum + (float(value) - low) / (high - low) * (maximum - minimum)
+        for index, value in transformed.items()
+    }
+
+
+def _linear_scaled(values: pd.Series, minimum: float = 0.8, maximum: float = 4.2) -> dict[str, float]:
     numeric = pd.to_numeric(values, errors="coerce").fillna(0.0)
     if numeric.empty:
         return {}
@@ -22,6 +54,33 @@ def _scaled(values: pd.Series, minimum: float, maximum: float) -> dict[str, floa
     }
 
 
+def _community_map(graph: nx.Graph) -> tuple[dict[str, int], list[dict[str, Any]]]:
+    mapping: dict[str, int] = {}
+    connected = graph.subgraph([node for node, degree in graph.degree() if degree > 0]).copy()
+    communities: list[set[str]] = []
+    if connected.number_of_nodes() > 0:
+        try:
+            communities = [set(group) for group in nx.community.greedy_modularity_communities(connected, weight="shared_task_count")]
+        except Exception:
+            communities = [set(component) for component in nx.connected_components(connected)]
+
+    communities.sort(key=lambda group: (-len(group), sorted(group)[0] if group else ""))
+    legend: list[dict[str, Any]] = []
+    for index, members in enumerate(communities):
+        community_id = index + 1
+        color = COMMUNITY_COLORS[index % len(COMMUNITY_COLORS)]
+        for node in members:
+            mapping[str(node)] = community_id
+        legend.append({"id": community_id, "label": f"Community {community_id}", "color": color, "count": len(members)})
+
+    isolated = [str(node) for node, degree in graph.degree() if degree == 0]
+    for node in isolated:
+        mapping[node] = 0
+    if isolated:
+        legend.append({"id": 0, "label": "Isolated", "color": ISOLATED_COLOR, "count": len(isolated)})
+    return mapping, legend
+
+
 def build_sigma_html(
     graph: nx.Graph,
     node_dataframe: pd.DataFrame,
@@ -31,27 +90,36 @@ def build_sigma_html(
     edge_width_metric: str,
     show_labels: bool,
 ) -> str:
-    """Build a self-contained Sigma.js view for Streamlit's HTML component."""
+    """Build a Sigma.js collaboration view optimized for both small and dense networks."""
     if node_dataframe.empty:
         return "<div style='padding:24px;color:#94a3b8'>Tidak ada node untuk ditampilkan.</div>"
 
-    positions = nx.spring_layout(graph, seed=42, weight="shared_task_count", k=None)
-    node_sizes = _scaled(node_dataframe[node_size_metric], 7.0, 20.0)
-    edge_sizes = _scaled(edge_dataframe[edge_width_metric], 1.0, 6.0) if not edge_dataframe.empty else {}
+    n_nodes = max(graph.number_of_nodes(), 1)
+    k = max(0.22, min(0.9, 2.2 / math.sqrt(n_nodes)))
+    positions = nx.spring_layout(graph, seed=42, weight="shared_task_count", k=k, iterations=140)
+    node_sizes = _sqrt_scaled(node_dataframe[node_size_metric])
+    edge_sizes = _linear_scaled(edge_dataframe[edge_width_metric]) if not edge_dataframe.empty else {}
+    community_by_node, legend = _community_map(graph)
+    community_color = {item["id"]: item["color"] for item in legend}
 
     nodes: list[dict[str, Any]] = []
     for index, row in node_dataframe.reset_index(drop=True).iterrows():
         employee = str(row["employee"])
         x, y = positions.get(employee, (0.0, 0.0))
+        community = int(community_by_node.get(employee, 0))
+        collaborator_count = int(row.get("collaborator_count", 0))
         nodes.append(
             {
                 "id": employee,
                 "label": employee,
                 "x": float(x),
                 "y": float(y),
-                "size": float(node_sizes.get(str(index), 10.0)),
-                "color": "#60a5fa",
-                "collaborator_count": int(row.get("collaborator_count", 0)),
+                "size": float(node_sizes.get(str(index), 8.0)),
+                "base_color": community_color.get(community, ISOLATED_COLOR),
+                "color": community_color.get(community, ISOLATED_COLOR),
+                "community": community,
+                "isolated": collaborator_count == 0,
+                "collaborator_count": collaborator_count,
                 "collaborative_task_count": int(row.get("collaborative_task_count", 0)),
                 "project_count": int(row.get("project_count", 0)),
                 "collaborative_hours": float(row.get("collaborative_hours", 0.0)),
@@ -68,8 +136,8 @@ def build_sigma_html(
                 "id": f"edge-{index}",
                 "source": str(row["source"]),
                 "target": str(row["target"]),
-                "size": float(edge_sizes.get(str(index), 1.5)),
-                "color": "#475569",
+                "size": float(edge_sizes.get(str(index), 1.2)),
+                "color": "#526175",
                 "shared_task_count": int(row.get("shared_task_count", 0)),
                 "shared_tasks": list(row.get("shared_tasks", []) or []),
                 "projects": list(row.get("projects", []) or []),
@@ -77,7 +145,7 @@ def build_sigma_html(
             }
         )
 
-    payload = json.dumps({"nodes": nodes, "edges": edges}, ensure_ascii=False).replace("</", "<\\/")
+    payload = json.dumps({"nodes": nodes, "edges": edges, "legend": legend}, ensure_ascii=False).replace("</", "<\\/")
     label_setting = "true" if show_labels else "false"
 
     return f"""
@@ -87,14 +155,20 @@ def build_sigma_html(
   <meta charset="utf-8" />
   <style>
     html, body {{ margin:0; padding:0; background:#020617; color:#e2e8f0; font-family:Inter,system-ui,-apple-system,sans-serif; overflow:hidden; }}
-    .toolbar {{ height:54px; display:flex; align-items:center; gap:10px; padding:0 12px; border:1px solid #1e293b; border-bottom:0; border-radius:12px 12px 0 0; background:#0f172a; box-sizing:border-box; }}
+    .toolbar {{ height:58px; display:flex; align-items:center; gap:8px; padding:0 12px; border:1px solid #1e293b; border-bottom:0; border-radius:12px 12px 0 0; background:#0f172a; box-sizing:border-box; }}
     .toolbar select, .toolbar button {{ height:34px; border-radius:8px; border:1px solid #334155; background:#111827; color:#e2e8f0; padding:0 10px; }}
-    .toolbar select {{ min-width:260px; flex:1; }}
-    .toolbar button {{ cursor:pointer; }}
-    .toolbar .hint {{ color:#64748b; font-size:12px; white-space:nowrap; }}
-    #stage {{ height:495px; position:relative; border:1px solid #1e293b; background:radial-gradient(circle at center,#0f172a 0,#020617 72%); box-sizing:border-box; }}
+    .toolbar select {{ min-width:250px; flex:1; }}
+    .toolbar button {{ cursor:pointer; white-space:nowrap; }}
+    .toolbar button.active {{ border-color:#60a5fa; background:#172554; color:#dbeafe; }}
+    .toolbar .hint {{ color:#64748b; font-size:11px; white-space:nowrap; }}
+    #stage {{ height:500px; position:relative; border:1px solid #1e293b; background:radial-gradient(circle at center,#0f172a 0,#020617 72%); box-sizing:border-box; }}
     #sigma-container {{ position:absolute; inset:0; }}
-    #tooltip {{ position:absolute; display:none; z-index:8; max-width:340px; pointer-events:none; padding:10px 12px; border:1px solid #334155; border-radius:9px; background:rgba(15,23,42,.97); color:#e2e8f0; font-size:12px; line-height:1.45; box-shadow:0 10px 35px rgba(0,0,0,.35); }}
+    #info-panel {{ position:absolute; display:none; z-index:9; right:14px; top:14px; width:310px; max-height:190px; overflow:auto; padding:11px 13px; border:1px solid #334155; border-radius:10px; background:rgba(15,23,42,.96); box-shadow:0 10px 35px rgba(0,0,0,.35); font-size:12px; line-height:1.45; }}
+    #legend {{ position:absolute; left:14px; bottom:14px; z-index:7; max-width:320px; padding:8px 10px; border:1px solid #293548; border-radius:9px; background:rgba(15,23,42,.9); font-size:11px; }}
+    .legend-title {{ color:#cbd5e1; font-weight:700; margin-bottom:5px; }}
+    .legend-grid {{ display:flex; flex-wrap:wrap; gap:5px 10px; }}
+    .legend-item {{ display:flex; align-items:center; gap:5px; color:#94a3b8; }}
+    .legend-dot {{ width:9px; height:9px; border-radius:50%; flex:0 0 auto; }}
     #detail {{ height:270px; padding:14px; border:1px solid #1e293b; border-top:0; border-radius:0 0 12px 12px; background:#0f172a; font-size:13px; line-height:1.5; box-sizing:border-box; overflow:hidden; }}
     .detail-grid {{ display:grid; grid-template-columns:minmax(220px,.8fr) minmax(320px,1.2fr); gap:18px; height:100%; }}
     .summary-card {{ border:1px solid #243244; border-radius:10px; padding:12px; background:#111827; height:100%; box-sizing:border-box; overflow:hidden; }}
@@ -108,27 +182,28 @@ def build_sigma_html(
     .list-row {{ display:flex; justify-content:space-between; gap:12px; padding:5px 0; border-bottom:1px solid rgba(51,65,85,.45); }}
     .list-row:last-child {{ border-bottom:0; }}
     .pill {{ display:inline-block; margin:4px 4px 0 0; padding:2px 7px; border:1px solid #334155; border-radius:999px; color:#cbd5e1; font-size:11px; }}
+    @media(max-width:900px) {{ .toolbar .hint {{ display:none; }} #legend {{ max-width:240px; }} }}
     @media(max-width:760px) {{
-      #stage {{ height:430px; }}
-      #detail {{ height:335px; overflow-y:auto; }}
-      .detail-grid {{ grid-template-columns:1fr; height:auto; }}
-      .summary-card {{ height:auto; }}
-      .detail-scroll {{ height:auto; overflow:visible; }}
-      .toolbar .hint {{ display:none; }}
+      #stage {{ height:430px; }} #detail {{ height:335px; overflow-y:auto; }}
+      .detail-grid {{ grid-template-columns:1fr; height:auto; }} .summary-card {{ height:auto; }} .detail-scroll {{ height:auto; overflow:visible; }}
+      #info-panel {{ width:250px; }}
     }}
   </style>
 </head>
 <body>
   <div class="toolbar">
     <select id="employee-search"><option value="">Cari / fokus karyawan…</option></select>
+    <button id="fit">Fit Graph</button>
+    <button id="isolate">Hide Isolated</button>
     <button id="reset">Reset View</button>
-    <span class="hint">Drag node · scroll zoom · hover info · click detail</span>
+    <span class="hint">hover quick info · click focus · drag · scroll zoom</span>
   </div>
   <div id="stage">
     <div id="sigma-container"></div>
-    <div id="tooltip"></div>
+    <div id="info-panel"></div>
+    <div id="legend"></div>
   </div>
-  <div id="detail"><span class="muted">Klik node untuk melihat detail kolaborasi. Hover node untuk quick insight dan hover garis untuk detail relasi.</span></div>
+  <div id="detail"><span class="muted">Klik node untuk Focus Mode. Hover node/garis untuk quick insight tanpa menutupi network.</span></div>
 
   <script type="module">
     import Graph from "https://cdn.jsdelivr.net/npm/graphology@0.26.0/+esm";
@@ -141,45 +216,62 @@ def build_sigma_html(
 
     const container = document.getElementById("sigma-container");
     const detail = document.getElementById("detail");
-    const tooltip = document.getElementById("tooltip");
+    const infoPanel = document.getElementById("info-panel");
+    const legend = document.getElementById("legend");
     const search = document.getElementById("employee-search");
+    const fitButton = document.getElementById("fit");
+    const isolateButton = document.getElementById("isolate");
     const resetButton = document.getElementById("reset");
 
+    legend.innerHTML = `<div class="legend-title">Community color</div><div class="legend-grid">` +
+      data.legend.map(item => `<div class="legend-item"><span class="legend-dot" style="background:${{item.color}}"></span>${{item.label}} (${{item.count}})</div>`).join("") +
+      `</div>`;
+
     data.nodes.slice().sort((a,b) => a.label.localeCompare(b.label)).forEach(n => {{
-      const option = document.createElement("option");
-      option.value = n.id;
-      option.textContent = n.label;
-      search.appendChild(option);
+      const option = document.createElement("option"); option.value = n.id; option.textContent = n.label; search.appendChild(option);
     }});
 
     let selectedNode = null;
     let hoveredNode = null;
     let draggedNode = null;
     let isDragging = false;
+    let hideIsolated = false;
+    let cameraRatio = 1;
 
     const renderer = new Sigma(graph, container, {{
       renderLabels: {label_setting},
       labelColor: {{attribute: "labelColor", color: "#e2e8f0"}},
       labelSize: 12,
+      labelDensity: 0.6,
+      labelGridCellSize: 80,
       defaultNodeColor: "#60a5fa",
-      defaultEdgeColor: "#475569",
+      defaultEdgeColor: "#526175",
       enableEdgeEvents: true,
+      minCameraRatio: 0.18,
+      maxCameraRatio: 4,
       nodeReducer: (node, attrs) => {{
-        const result = {{...attrs, labelColor: "#e2e8f0"}};
+        const result = {{...attrs, color: attrs.base_color || attrs.color, labelColor: "#e2e8f0"}};
+        if (hideIsolated && attrs.isolated) {{ result.hidden = true; return result; }}
         const focus = selectedNode || hoveredNode;
-        if (focus && node !== focus && !graph.areNeighbors(node, focus)) {{
-          result.color = "#1e293b";
-          result.labelColor = "#64748b";
+        const isNeighbor = focus && graph.areNeighbors(node, focus);
+        const important = attrs.collaborator_count >= 4;
+        const zoomAllowsLabel = cameraRatio < 0.8;
+        if (!{label_setting} || (!focus && !important && !zoomAllowsLabel)) result.label = "";
+        if (focus && node !== focus && !isNeighbor) {{
+          result.color = "#182235";
+          result.labelColor = "#4b5d73";
+          result.size = Math.max(4.5, attrs.size * 0.82);
           result.zIndex = 0;
         }} else if (node === focus) {{
           result.color = "#fbbf24";
           result.labelColor = "#f8fafc";
-          result.size = attrs.size * 1.25;
+          result.size = Math.min(16, attrs.size * 1.08);
+          result.forceLabel = true;
+          result.zIndex = 3;
+        }} else if (isNeighbor) {{
+          result.color = attrs.base_color || "#93c5fd";
+          result.forceLabel = true;
           result.zIndex = 2;
-        }} else if (focus) {{
-          result.color = "#93c5fd";
-          result.labelColor = "#e2e8f0";
-          result.zIndex = 1;
         }}
         return result;
       }},
@@ -189,16 +281,19 @@ def build_sigma_html(
         if (focus) {{
           const ends = graph.extremities(edge);
           if (!ends.includes(focus)) {{
-            result.color = "#1f2937";
-            result.size = Math.max(0.4, attrs.size * 0.4);
+            result.color = "#172033";
+            result.size = Math.max(0.35, attrs.size * 0.32);
           }} else {{
-            result.color = "#94a3b8";
-            result.size = attrs.size * 1.2;
+            result.color = "#cbd5e1";
+            result.size = Math.min(5.2, attrs.size * 1.3);
+            result.zIndex = 2;
           }}
         }}
         return result;
       }},
     }});
+
+    renderer.getCamera().on("updated", state => {{ cameraRatio = state.ratio; renderer.refresh(); }});
 
     function topCollaboratorRows(items) {{
       if (!items || !items.length) return '<span class="muted">Belum ada collaborator.</span>';
@@ -212,43 +307,26 @@ def build_sigma_html(
     function nodeDetail(node) {{
       const a = graph.getNodeAttributes(node);
       const tasks = (a.top_tasks || []).slice(0,5).map(x => `<span class="pill">${{x}}</span>`).join("");
-      detail.innerHTML = `
-        <div class="detail-grid">
-          <div class="summary-card">
-            <div class="title">${{a.label}}</div>
-            <div class="muted">Selected employee</div>
-            <div class="summary-grid">
-              <div class="metric"><b>${{a.collaborator_count}}</b><span class="muted">Collaborators</span></div>
-              <div class="metric"><b>${{a.collaborative_task_count}}</b><span class="muted">Shared tasks</span></div>
-              <div class="metric"><b>${{a.project_count}}</b><span class="muted">Projects</span></div>
-              <div class="metric"><b>${{Number(a.collaborative_hours).toFixed(2)}}</b><span class="muted">Collaborative hours</span></div>
-            </div>
-          </div>
-          <div class="detail-scroll">
-            <div class="section-title">Top Collaborators</div>
-            ${{topCollaboratorRows(a.top_collaborators)}}
-            <div class="section-title" style="margin-top:12px">Dominant Tasks</div>
-            ${{tasks || '<span class="muted">Belum ada task dominan.</span>'}}
-          </div>
-        </div>`;
+      detail.innerHTML = `<div class="detail-grid"><div class="summary-card"><div class="title">${{a.label}}</div><div class="muted">Focus Mode</div><div class="summary-grid"><div class="metric"><b>${{a.collaborator_count}}</b><span class="muted">Collaborators</span></div><div class="metric"><b>${{a.collaborative_task_count}}</b><span class="muted">Shared tasks</span></div><div class="metric"><b>${{a.project_count}}</b><span class="muted">Projects</span></div><div class="metric"><b>${{Number(a.collaborative_hours).toFixed(2)}}</b><span class="muted">Collaborative hours</span></div></div></div><div class="detail-scroll"><div class="section-title">Top Collaborators</div>${{topCollaboratorRows(a.top_collaborators)}}<div class="section-title" style="margin-top:12px">Dominant Tasks</div>${{tasks || '<span class="muted">Belum ada task dominan.</span>'}}</div></div>`;
     }}
 
-    function showNodeTooltip(node, event) {{
+    function showNodeInfo(node) {{
       const a = graph.getNodeAttributes(node);
-      tooltip.style.display = "block";
-      tooltip.innerHTML = `<b>${{a.label}}</b><br>` +
-        `${{a.collaborator_count}} collaborator · ${{a.collaborative_task_count}} shared task · ` +
-        `${{Number(a.collaborative_hours).toFixed(2)}} jam kolaboratif<br>` +
-        `<span class="muted">Top collaborator:</span> ${{(a.top_collaborators || []).slice(0,3).join(", ") || "-"}}`;
-      tooltip.style.left = `${{Math.min(event.x + 14, container.clientWidth - 355)}}px`;
-      tooltip.style.top = `${{Math.max(event.y - 10, 10)}}px`;
+      infoPanel.style.display = "block";
+      infoPanel.innerHTML = `<div class="title">${{a.label}}</div><b>${{a.collaborator_count}}</b> collaborator · <b>${{a.collaborative_task_count}}</b> shared task · <b>${{Number(a.collaborative_hours).toFixed(2)}}</b> jam<br><span class="muted">Top:</span> ${{(a.top_collaborators || []).slice(0,3).join(", ") || "-"}}<br><span class="muted">${{a.community ? `Community ${{a.community}}` : "Isolated"}}</span>`;
+    }}
+
+    function showEdgeInfo(edge) {{
+      const a = graph.getEdgeAttributes(edge);
+      infoPanel.style.display = "block";
+      infoPanel.innerHTML = `<div class="title">${{a.source}} ↔ ${{a.target}}</div><b>${{a.shared_task_count}}</b> task bersama · <b>${{Number(a.related_hours).toFixed(2)}}</b> jam terkait<br><span class="muted">Task:</span> ${{(a.shared_tasks || []).join(", ") || "-"}}<br><span class="muted">Project:</span> ${{(a.projects || []).join(", ") || "-"}}`;
     }}
 
     function focusNode(node, navigate=false) {{
       selectedNode = node || null;
       if (!node) {{
         search.value = "";
-        detail.innerHTML = '<span class="muted">Klik node untuk melihat detail kolaborasi. Hover node untuk quick insight dan hover garis untuk detail relasi.</span>';
+        detail.innerHTML = '<span class="muted">Klik node untuk Focus Mode. Hover node/garis untuk quick insight tanpa menutupi network.</span>';
         renderer.refresh();
         return;
       }}
@@ -256,57 +334,37 @@ def build_sigma_html(
       nodeDetail(node);
       if (navigate) {{
         const attrs = graph.getNodeAttributes(node);
-        renderer.getCamera().animate({{x: attrs.x, y: attrs.y, ratio: 0.7}}, {{duration: 450}});
+        renderer.getCamera().animate({{x: attrs.x, y: attrs.y, ratio: 0.72}}, {{duration: 420}});
       }}
       renderer.refresh();
     }}
 
     renderer.on("clickNode", ({{node}}) => focusNode(node, false));
     renderer.on("clickStage", () => focusNode(null));
-    renderer.on("enterNode", ({{node, event}}) => {{ hoveredNode = node; showNodeTooltip(node, event); renderer.refresh(); }});
-    renderer.on("leaveNode", () => {{ hoveredNode = null; tooltip.style.display = "none"; renderer.refresh(); }});
+    renderer.on("enterNode", ({{node}}) => {{ hoveredNode = node; showNodeInfo(node); renderer.refresh(); }});
+    renderer.on("leaveNode", () => {{ hoveredNode = null; infoPanel.style.display = "none"; renderer.refresh(); }});
+    renderer.on("enterEdge", ({{edge}}) => showEdgeInfo(edge));
+    renderer.on("leaveEdge", () => {{ infoPanel.style.display = "none"; }});
 
-    renderer.on("enterEdge", ({{edge, event}}) => {{
-      const a = graph.getEdgeAttributes(edge);
-      tooltip.style.display = "block";
-      tooltip.innerHTML = `<b>${{a.source}} ↔ ${{a.target}}</b><br>` +
-        `${{a.shared_task_count}} task bersama · ${{Number(a.related_hours).toFixed(2)}} jam terkait<br>` +
-        `<span class="muted">Task:</span> ${{(a.shared_tasks || []).join(", ") || "-"}}<br>` +
-        `<span class="muted">Project:</span> ${{(a.projects || []).join(", ") || "-"}}`;
-      tooltip.style.left = `${{Math.min(event.x + 14, container.clientWidth - 355)}}px`;
-      tooltip.style.top = `${{Math.max(event.y - 10, 10)}}px`;
-    }});
-    renderer.on("leaveEdge", () => {{ tooltip.style.display = "none"; }});
-
-    renderer.on("downNode", ({{node}}) => {{
-      isDragging = true;
-      draggedNode = node;
-      graph.setNodeAttribute(node, "highlighted", true);
-      renderer.getCamera().disable();
-    }});
+    renderer.on("downNode", ({{node}}) => {{ isDragging = true; draggedNode = node; renderer.getCamera().disable(); }});
     renderer.getMouseCaptor().on("mousemovebody", event => {{
       if (!isDragging || !draggedNode) return;
       const pos = renderer.viewportToGraph(event);
-      graph.setNodeAttribute(draggedNode, "x", pos.x);
-      graph.setNodeAttribute(draggedNode, "y", pos.y);
-      event.preventSigmaDefault?.();
-      event.original?.preventDefault?.();
-      event.original?.stopPropagation?.();
+      graph.setNodeAttribute(draggedNode, "x", pos.x); graph.setNodeAttribute(draggedNode, "y", pos.y);
+      event.preventSigmaDefault?.(); event.original?.preventDefault?.(); event.original?.stopPropagation?.();
     }});
-    renderer.getMouseCaptor().on("mouseup", () => {{
-      if (draggedNode) graph.removeNodeAttribute(draggedNode, "highlighted");
-      isDragging = false;
-      draggedNode = null;
-      renderer.getCamera().enable();
-    }});
-    renderer.getMouseCaptor().on("mousedown", () => {{
-      if (!renderer.getCustomBBox()) renderer.setCustomBBox(renderer.getBBox());
-    }});
+    renderer.getMouseCaptor().on("mouseup", () => {{ isDragging = false; draggedNode = null; renderer.getCamera().enable(); }});
 
     search.addEventListener("change", () => focusNode(search.value || null, true));
+    fitButton.addEventListener("click", () => renderer.getCamera().animatedReset({{duration:420}}));
+    isolateButton.addEventListener("click", () => {{
+      hideIsolated = !hideIsolated;
+      isolateButton.textContent = hideIsolated ? "Show Isolated" : "Hide Isolated";
+      isolateButton.classList.toggle("active", hideIsolated);
+      renderer.refresh();
+    }});
     resetButton.addEventListener("click", () => {{
-      focusNode(null);
-      renderer.getCamera().animatedReset({{duration: 450}});
+      focusNode(null); hideIsolated = false; isolateButton.textContent = "Hide Isolated"; isolateButton.classList.remove("active"); renderer.getCamera().animatedReset({{duration:420}}); renderer.refresh();
     }});
   </script>
 </body>
