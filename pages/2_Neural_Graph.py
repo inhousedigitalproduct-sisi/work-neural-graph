@@ -177,7 +177,7 @@ sigma_html = build_sigma_html(
     edge_width_metric=edge_width_metric,
     show_labels=show_labels,
 )
-components.html(sigma_html, height=735, scrolling=False)
+components.html(sigma_html, height=835, scrolling=False)
 
 with st.expander("Cara membaca Collaboration Graph", expanded=False):
     st.markdown(
