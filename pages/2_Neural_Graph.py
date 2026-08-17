@@ -7,6 +7,12 @@ import streamlit.components.v1 as components
 from src.analytics.service import AnalyticsService
 from src.graph.builder import GraphFilterConfig, apply_graph_filters
 from src.graph.collaboration import build_collaboration_graph
+from src.graph.collaboration_mentions import (
+    build_acknowledgement_insights,
+    build_visible_directional_signals,
+    extract_collaboration_mentions,
+    load_employee_aliases,
+)
 from src.graph.pinball_animation import inject_pinball_effect
 from src.graph.sigma_renderer import build_sigma_html
 from src.services import TimesheetDataService
@@ -79,6 +85,11 @@ filters = GraphFilterConfig(
 )
 filtered = apply_graph_filters(source_dataframe, filters)
 result = build_collaboration_graph(filtered)
+mention_result = extract_collaboration_mentions(
+    filtered,
+    employee_roster=source_dataframe["employee"].dropna().astype(str).tolist(),
+    aliases=load_employee_aliases(),
+)
 snapshot = analytics_service.build_snapshot(filters=filters)
 
 if result.filtered_dataframe.empty:
@@ -148,11 +159,28 @@ for source, target in list(display_graph.edges):
     if not keep:
         display_graph.remove_edge(source, target)
 
+directional_signals = build_visible_directional_signals(mention_result.directional_dataframe, edges)
+acknowledgement_insights = build_acknowledgement_insights(
+    result.edge_dataframe,
+    mention_result.directional_dataframe,
+)
+
 st.subheader("Peta kolaborasi interaktif")
 st.caption(
-    "Dot kolaborasi bergerak bolak-balik secara otomatis pada relasi terkuat sebagai representasi kolaborasi dua arah. "
-    "Hover atau klik node untuk menonjolkan dot pada relasi node tersebut; drag node untuk mengatur posisi dan scroll untuk zoom."
+    "Garis tetap menunjukkan shared task. Dot kecil sekarang memiliki arah: bergerak dari pemilik timesheet yang "
+    "menyebut collaborator pada Note menuju karyawan yang disebut. Jika kedua pihak saling menyebut, dua dot "
+    "bergerak berlawanan sebagai dua evidence yang berbeda."
 )
+if mention_result.evidence_dataframe.empty:
+    st.caption(
+        "Belum ada directional acknowledgement dengan confidence >= 90% pada Note di scope aktif; karena itu garis dapat tampil tanpa dot."
+    )
+else:
+    st.caption(
+        f"Directional evidence: {len(mention_result.evidence_dataframe):,} timesheet evidence • "
+        f"{len(mention_result.directional_dataframe):,} arah acknowledgement • "
+        f"{len(directional_signals):,} arah terlihat pada graph saat ini."
+    )
 if result.summary.collaboration_links == 0:
     st.info("Tidak ada task yang dikerjakan oleh lebih dari satu karyawan pada scope aktif. Node tetap ditampilkan tanpa garis.")
 
@@ -164,7 +192,7 @@ sigma_html = build_sigma_html(
     edge_width_metric="shared_task_count",
     show_labels=show_labels,
 )
-sigma_html = inject_pinball_effect(sigma_html)
+sigma_html = inject_pinball_effect(sigma_html, directional_signals)
 components.html(sigma_html, height=835, scrolling=False)
 
 with st.expander("Cara membaca Collaboration Graph", expanded=False):
@@ -174,12 +202,15 @@ with st.expander("Cara membaca Collaboration Graph", expanded=False):
 - **Garis = dua karyawan mengerjakan `task_key` yang sama** pada Nama Project/Range Date aktif, walaupun tanggal pengerjaannya berbeda.
 - **Warna & ketebalan garis = frekuensi kolaborasi**, dihitung dari jumlah task bersama untuk pasangan karyawan tersebut.
 - **Bar scale** menunjukkan rentang frekuensi kolaborasi dari paling sedikit ke paling banyak pada scope aktif.
-- **Dot kecil bergerak bolak-balik** di sepanjang garis untuk menekankan bahwa hubungan kolaborasi bersifat dua arah.
-- Animasi dibatasi maksimum **120 relasi terkuat** dan memakai adaptive frame rate agar tetap ringan pada graph padat.
+- **Dot kecil satu arah = acknowledgement dari Note timesheet.** Source adalah pemilik timesheet; target adalah karyawan yang disebut secara deterministic dengan confidence minimal 90%.
+- Jika **A menyebut B** tetapi B tidak menyebut A, hanya ada dot **A → B**. Jika keduanya saling menyebut, dua directional signal berjalan berlawanan.
+- Satu target hanya dihitung **sekali per timesheet entry**, walaupun namanya disebut berulang kali pada Note yang sama.
+- Nama yang ambigu tidak dipakai sebagai evidence. Alias/nickname eksplisit dapat dikonfigurasi di `config/employee_aliases.json`.
+- Animasi dibatasi maksimum **120 directional signal terkuat** dan memakai adaptive frame rate agar tetap ringan pada graph padat.
 - **Hover atau klik node** membuat dot pada relasi node tersebut sedikit lebih menonjol tanpa menambahkan glow/gradient berat.
-- **Hover garis** untuk melihat task, project, dan total jam yang menjadi dasar relasi.
+- **Mention-only** (ada penyebutan tetapi tidak ada shared task) tetap masuk analisis acknowledgement, tetapi belum divisualisasikan sebagai garis agar semantic garis tetap konsisten.
 - **Ukuran node** dapat diganti dari sidebar.
-- Animasi adalah bantuan visual; warna node tetap menunjukkan community/cluster dan bukan penilaian performa individu.
+- Acknowledgement reciprocity adalah sinyal pola dokumentasi kolaborasi, **bukan penilaian kualitas atau performa individu**.
 """
     )
 
@@ -202,6 +233,42 @@ with st.expander("Relasi kolaborasi", expanded=False):
         table["shared_tasks"] = table["shared_tasks"].map(lambda values: ", ".join(values))
         table["projects"] = table["projects"].map(lambda values: ", ".join(values))
     st.dataframe(table, use_container_width=True, hide_index=True)
+
+with st.expander("Directional acknowledgement", expanded=False):
+    if acknowledgement_insights.empty:
+        st.info("Belum ada shared-task atau acknowledgement evidence pada scope aktif.")
+    else:
+        insight_table = acknowledgement_insights.copy()
+        insight_table["acknowledgement_reciprocity"] = (
+            insight_table["acknowledgement_reciprocity"].astype(float) * 100
+        ).round(1)
+        insight_table = insight_table.rename(
+            columns={
+                "employee_a": "Karyawan A",
+                "employee_b": "Karyawan B",
+                "shared_task_count": "Shared task",
+                "a_to_b_count": "A → B",
+                "b_to_a_count": "B → A",
+                "acknowledgement_reciprocity": "Reciprocity (%)",
+                "evidence_type": "Evidence type",
+            }
+        )
+        st.dataframe(insight_table, use_container_width=True, hide_index=True)
+
+    if not mention_result.directional_dataframe.empty:
+        st.markdown("**Evidence arah dari Note**")
+        direction_table = mention_result.directional_dataframe.copy().rename(
+            columns={
+                "source_employee": "Source",
+                "target_employee": "Target",
+                "acknowledgement_entry_count": "Timesheet evidence",
+                "unique_task_count": "Task unik",
+                "unique_project_count": "Project unik",
+                "first_date": "Pertama",
+                "last_date": "Terakhir",
+            }
+        )
+        st.dataframe(direction_table, use_container_width=True, hide_index=True)
 
 with st.expander("Detail karyawan", expanded=False):
     table = result.node_dataframe.copy()

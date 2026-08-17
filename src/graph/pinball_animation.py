@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+import json
+
+
 PINBALL_STYLE = """
     #pinball-signal-layer {
       position:absolute;
@@ -12,11 +16,12 @@ PINBALL_STYLE = """
 """
 
 PINBALL_SCRIPT = r"""
+    const pinballSignals = __PINBALL_SIGNALS__;
     const pinballLayer = document.getElementById("pinball-signal-layer");
     const pinballStage = document.getElementById("stage");
     const pinballContext = pinballLayer ? pinballLayer.getContext("2d") : null;
     const prefersReducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false;
-    const MAX_ANIMATED_EDGES = 120;
+    const MAX_ANIMATED_SIGNALS = 120;
     let pinballDpr = 1;
     let lastPinballFrame = 0;
     let pinballRuntimeWarned = false;
@@ -36,11 +41,15 @@ PINBALL_SCRIPT = r"""
       pinballContext.setTransform(pinballDpr, 0, 0, pinballDpr, 0, 0);
     }
 
-    function edgePhase(edgeKey) {
+    function signalPhase(signalKey) {
       let hash = 0;
-      const text = String(edgeKey);
+      const text = String(signalKey);
       for (let i = 0; i < text.length; i += 1) hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
       return Math.abs(hash % 1000) / 1000;
+    }
+
+    function pairKey(source, target) {
+      return [String(source), String(target)].sort().join("\u0000");
     }
 
     function collaborationRatio(value) {
@@ -61,18 +70,25 @@ PINBALL_SCRIPT = r"""
       return `rgba(${r},${g},${b},${alpha})`;
     }
 
-    const pinballEdges = data.edges.map(edge => {
-      const count = Number(edge.collaboration_count || edge.shared_task_count || 1);
+    const edgeByPair = new Map(
+      data.edges.map(edge => [pairKey(edge.source, edge.target), edge]),
+    );
+    const pinballEdges = pinballSignals.map(signal => {
+      const source = String(signal.source || "");
+      const target = String(signal.target || "");
+      const edge = edgeByPair.get(pairKey(source, target));
+      if (!source || !target || source === target || !edge) return null;
+      const count = Number(signal.count || 1);
       return {
-        key: edge.id,
-        source: edge.source,
-        target: edge.target,
+        key: `${source}->${target}`,
+        source,
+        target,
         color: edge.color || "#94a3b8",
         count,
-        intensity: collaborationRatio(count),
-        phase: edgePhase(edge.id),
+        intensity: collaborationRatio(edge.collaboration_count || edge.shared_task_count || 1),
+        phase: signalPhase(`${source}->${target}`),
       };
-    }).sort((a, b) => b.count - a.count).slice(0, MAX_ANIMATED_EDGES);
+    }).filter(Boolean).sort((a, b) => b.count - a.count).slice(0, MAX_ANIMATED_SIGNALS);
 
     const frameInterval = pinballEdges.length > 90 ? 66 : pinballEdges.length > 45 ? 50 : 40;
 
@@ -100,7 +116,7 @@ PINBALL_SCRIPT = r"""
           return point;
         } catch (error) {
           if (!pinballRuntimeWarned) {
-            console.warn("Pinball animation disabled for an invalid Sigma viewport coordinate.", error);
+            console.warn("Directional dot animation skipped an invalid Sigma viewport coordinate.", error);
             pinballRuntimeWarned = true;
           }
           return null;
@@ -113,20 +129,19 @@ PINBALL_SCRIPT = r"""
         if (!sourcePoint || !targetPoint) return;
 
         const active = hasFocus && (edge.source === focusNode || edge.target === focusNode);
-        const speed = active ? 0.00034 + edge.intensity * 0.00012 : 0.00022 + edge.intensity * 0.00008;
-        const phase = (now * speed + edge.phase) % 1;
-        const travel = 1 - Math.abs(1 - 2 * phase);
+        const speed = active ? 0.00034 + edge.intensity * 0.00010 : 0.00022 + edge.intensity * 0.00006;
+        const cycle = (now * speed + edge.phase) % 1.10;
+        if (cycle > 1) return;
+        const travel = cycle;
         const x = sourcePoint.x + (targetPoint.x - sourcePoint.x) * travel;
         const y = sourcePoint.y + (targetPoint.y - sourcePoint.y) * travel;
         const radius = active ? 5.0 : 3.7 + edge.intensity * 0.5;
 
-        // High-contrast white core keeps the dot visible on the dark graph without expensive glow/shadow effects.
         pinballContext.beginPath();
         pinballContext.arc(x, y, radius, 0, Math.PI * 2);
         pinballContext.fillStyle = active ? "rgba(255,255,255,1)" : "rgba(255,255,255,0.96)";
         pinballContext.fill();
 
-        // Thin edge-colored outline preserves collaboration-frequency color context at negligible cost.
         pinballContext.beginPath();
         pinballContext.arc(x, y, radius + (active ? 1.4 : 0.9), 0, Math.PI * 2);
         pinballContext.strokeStyle = rgbaFromHex(edge.color, active ? 0.95 : 0.82);
@@ -135,7 +150,7 @@ PINBALL_SCRIPT = r"""
       });
     }
 
-    if (pinballLayer && pinballStage && pinballContext && !prefersReducedMotion) {
+    if (pinballLayer && pinballStage && pinballContext && !prefersReducedMotion && pinballEdges.length) {
       resizePinballLayer();
       new ResizeObserver(resizePinballLayer).observe(pinballStage);
       window.requestAnimationFrame(drawPinball);
@@ -143,8 +158,13 @@ PINBALL_SCRIPT = r"""
 """
 
 
-def inject_pinball_effect(html: str) -> str:
-    """Inject a bounded, lightweight bidirectional collaboration-dot overlay."""
+def inject_pinball_effect(
+    html: str,
+    signals: Sequence[Mapping[str, object]] | None = None,
+) -> str:
+    """Inject bounded one-way dots derived from directional timesheet acknowledgements."""
+    payload = json.dumps(list(signals or ()), ensure_ascii=False).replace("</", "<\\/")
+    script = PINBALL_SCRIPT.replace("__PINBALL_SIGNALS__", payload)
     html = html.replace("</style>", f"{PINBALL_STYLE}\n  </style>", 1)
     html = html.replace(
         '<div id="sigma-container"></div>',
@@ -153,5 +173,5 @@ def inject_pinball_effect(html: str) -> str:
     )
     script_close = html.rfind("</script>")
     if script_close >= 0:
-        html = html[:script_close] + PINBALL_SCRIPT + "\n  " + html[script_close:]
+        html = html[:script_close] + script + "\n  " + html[script_close:]
     return html

@@ -2,7 +2,12 @@
 
 ## Purpose
 
-Neural Graph memvisualisasikan kolaborasi antar-karyawan. Node adalah karyawan; edge berarti dua karyawan berbagi `task_key` pada scope project/date aktif. `shared_task_count` adalah metric frekuensi kolaborasi utama.
+Neural Graph memvisualisasikan dua jenis evidence kolaborasi yang sengaja dipisahkan:
+
+1. **Shared-task evidence** — edge undirected berarti dua karyawan berbagi `task_key` pada scope project/date aktif. `shared_task_count` tetap menjadi metric frekuensi kolaborasi utama untuk warna dan ketebalan garis.
+2. **Directional acknowledgement evidence** — dot satu arah berarti pemilik timesheet menyebut karyawan lain pada kolom `note` dengan deterministic employee-name matching.
+
+Acknowledgement adalah evidence pola dokumentasi/koordinasi, bukan penilaian performa individu.
 
 ## Business Flow
 
@@ -10,38 +15,94 @@ Neural Graph memvisualisasikan kolaborasi antar-karyawan. Node adalah karyawan; 
 Active dataset
  -> date + Nama Project filter
  -> apply_graph_filters
- -> build_collaboration_graph
- -> employee nodes + shared-task edges
+ -> filtered timesheet rows
+      |-> build_collaboration_graph
+      |     -> shared-task employee nodes + undirected edges
+      |
+      |-> extract_collaboration_mentions
+            -> deterministic employee alias matching on note
+            -> row-level directional evidence
+            -> aggregated source -> target acknowledgement
+
+shared edges + directional evidence
+ -> acknowledgement insight classification / reciprocity
  -> threshold minimum shared tasks
  -> Sigma payload/layout/community
- -> interactive Sigma.js renderer
- -> lightweight bidirectional pinball-dot overlay
+ -> one-way directional dot overlay on visible shared-task edges
 ```
-
-Node size dapat menggunakan collaborator count, collaborative task count, collaborative hours, atau project count. Edge color/thickness menggunakan jumlah task bersama. Dot animation adalah visual aid dan tidak mengubah semantic data.
 
 ## Entry Points and Dependencies
 
 - Entry point: `pages/2_Neural_Graph.py`.
 - Filtering contract: `src/graph/builder.py::GraphFilterConfig/apply_graph_filters`.
-- Collaboration model: `src/graph/collaboration.py`.
+- Shared-task collaboration model: `src/graph/collaboration.py`.
+- Directional extraction: `src/graph/collaboration_mentions.py`.
+- Manual nickname/alias config: `config/employee_aliases.json`.
 - Main renderer: `src/graph/sigma_renderer.py`.
-- Lightweight animation helper: `src/graph/pinball_animation.py`.
+- Lightweight directional animation helper: `src/graph/pinball_animation.py`.
 - Dataset: `TimesheetDataService`.
 - Analytics summary: `AnalyticsService`.
 - Runtime browser dependencies: Graphology + Sigma.js dari CDN.
 
+## Directional Extraction Contract
+
+- Source selalu nilai `employee` dari row timesheet.
+- Target hanya boleh employee lain dari canonical employee roster aktif yang ditemukan di `note`.
+- `note` adalah source text v1; `summary` tidak digunakan untuk directional acknowledgement agar semantic tetap eksplisit.
+- Matching deterministic: full canonical name `1.00`, manual alias `0.98`, unique two-word alias `0.95`, unique automatic single-token alias `0.88`.
+- Threshold default adalah **0.90**; automatic single-token alias tidak menghasilkan evidence secara default. Nickname pendek harus ditambahkan secara eksplisit ke `config/employee_aliases.json`.
+- Alias yang dimiliki lebih dari satu employee dianggap ambiguous dan tidak digunakan.
+- Self-mention diabaikan.
+- Satu target dihitung maksimum satu kali per `entry_id`, walaupun nama target muncul berulang di Note yang sama.
+- Evidence row menyimpan source, target, entry id, date, task, project, matched alias, confidence, context pendek, dan note hash agar hasil dapat diaudit.
+- Extraction tidak menggunakan LLM. LLM dapat menjadi enrichment terpisah di masa depan untuk mengklasifikasikan jenis interaksi, bukan menentukan identitas employee.
+
+## Acknowledgement Insight Contract
+
+Pair insight menggabungkan shared-task edge dengan dua kemungkinan arah acknowledgement:
+
+- `SHARED_MUTUAL`: shared task ada dan A -> B serta B -> A sama-sama terdeteksi.
+- `SHARED_ONE_SIDED`: shared task ada tetapi acknowledgement hanya satu arah.
+- `SHARED_SILENT`: shared task ada tanpa acknowledgement pada Note.
+- `MENTION_ONLY`: acknowledgement ada tetapi shared task tidak ditemukan pada scope aktif.
+
+Acknowledgement reciprocity dihitung sebagai:
+
+```text
+2 * min(A_to_B, B_to_A) / (A_to_B + B_to_A)
+```
+
+Nilai ini mengukur balance acknowledgement pada timesheet, bukan collaboration quality. Asimetri dapat normal karena role coordinator, reviewer, lead, task owner, support, atau pola dokumentasi yang berbeda.
+
 ## Animation Contract
 
-- Animasi default berupa satu dot yang bergerak **bolak-balik** pada edge untuk merepresentasikan kolaborasi dua arah.
-- Dot default harus cukup terlihat pada canvas gelap: radius sekitar **3.7-4.2 px** dengan white core dan outline tipis mengikuti warna edge; focus/hover sekitar **5 px**.
+- Dot hanya berasal dari **directional acknowledgement evidence**, bukan dari urutan alfabet edge atau asumsi bahwa shared-task selalu reciprocal.
+- Dot bergerak satu arah dari source ke target, lalu restart dari source. Tidak memantul kembali.
+- Jika A -> B dan B -> A sama-sama punya evidence, dua signal terpisah dapat bergerak berlawanan pada edge yang sama.
+- Shared-task edge tanpa directional evidence tetap tampil tetapi tanpa dot.
+- `MENTION_ONLY` tetap tersedia pada analysis table tetapi belum dirender sebagai edge, agar semantic garis tetap konsisten sebagai shared task.
+- Dot default radius sekitar **3.7-4.2 px** dengan white core dan outline tipis mengikuti warna edge; focus/hover sekitar **5 px**.
 - Tidak memakai streak, gradient, large shadow blur, atau additive glow yang mahal.
-- Maksimum **120 edge** dianimasikan; edge diprioritaskan berdasarkan `shared_task_count` tertinggi.
-- Frame interval adaptif berdasarkan jumlah edge yang dianimasikan.
+- Maksimum **120 directional signals** dianimasikan, diprioritaskan berdasarkan jumlah timesheet evidence.
+- Frame interval adaptif berdasarkan jumlah signal yang dianimasikan.
 - Posisi viewport node di-cache sekali per frame.
-- Koordinat viewport harus divalidasi (`Number.isFinite`) agar satu edge invalid tidak mematikan seluruh animation loop secara diam-diam.
+- Koordinat viewport harus divalidasi (`Number.isFinite`) agar satu signal invalid tidak mematikan animation loop secara diam-diam.
 - Rendering berhenti saat tab browser hidden dan dihormati saat `prefers-reduced-motion` aktif.
-- Hover/focus node hanya menambah ukuran dan outline ringan pada dot terkait; tidak menambah full-edge glow.
+
+## Alias Configuration
+
+`config/employee_aliases.json` berisi object canonical employee -> daftar nickname/alias yang dianggap eksplisit.
+
+Contoh:
+
+```json
+{
+  "Muhammad Andras Syahrindra Ramadhani": ["Andras", "Mas Andras"],
+  "Vitta Kusmala": ["Vitta", "Mbak Vitta"]
+}
+```
+
+Config baseline boleh kosong (`{}`). Alias yang ambiguous terhadap employee lain tetap tidak boleh menghasilkan evidence.
 
 ## Current Risks and Non-standard Code
 
@@ -49,19 +110,24 @@ Node size dapat menggunakan collaborator count, collaborative task count, collab
 - Page menggunakan `AnalyticsService` yang saat ini membangun legacy `GraphService/GraphBuilder` untuk analytics snapshot, walaupun visual graph sudah collaboration-based.
 - Sigma HTML adalah large Python f-string berisi CSS/JS, sehingga raw string escaping dan regression risk tinggi.
 - CDN availability adalah runtime dependency untuk interactive renderer.
+- Note quality dan naming convention menentukan recall extraction. Conservative matching sengaja lebih memilih false-negative daripada false-positive.
 
 ## Refactor Recommendations
 
-1. Pertahankan animation concern di helper khusus, bukan di Streamlit page.
-2. Pisahkan payload construction dari HTML template agar dapat unit-test secara langsung.
+1. Pertahankan extraction dan animation concern pada helper khusus, bukan di Streamlit page.
+2. Pisahkan Sigma payload construction dari HTML template agar dapat unit-test secara langsung.
 3. Decouple period KPI dari legacy date graph builder.
 4. Hapus/deprecate renderer yang tidak digunakan setelah repository-wide usage search.
 5. Tambahkan browser-level performance smoke test jika tooling frontend tersedia.
+6. Jika directional extraction sudah stabil, evaluasi enrichment jenis interaksi (review/support/handover/coordination) sebagai layer terpisah.
 
 ## Tests
 
-Coverage utama: `tests/test_collaboration_graph.py`, `test_graph_builder.py`, `test_graph_visualizer.py`, dan `test_pinball_animation.py`. `test_pinball_animation.py` memastikan animation bounded, bidirectional, cukup visible, tanpa heavy gradient/shadow effect, pause behavior tetap ada, dan invalid viewport coordinate tidak menjatuhkan animation loop.
+Coverage utama: `tests/test_collaboration_graph.py`, `test_graph_builder.py`, `test_graph_visualizer.py`, `test_collaboration_mentions.py`, dan `test_pinball_animation.py`.
+
+- `test_collaboration_mentions.py` menguji one-way extraction, dedupe per entry, conservative alias threshold, manual alias, mutual/one-sided/silent/mention-only classification, reciprocity, dan filtering signal ke visible shared edge.
+- `test_pinball_animation.py` memastikan animation menerima explicit directional signals, bergerak one-way (bukan bounce), bounded, visible, tanpa heavy gradient/shadow effect, reduced-motion handling, dan invalid viewport coordinate guard.
 
 ## Change Contract
 
-Setiap perubahan node/edge semantic, filtering, collaboration metric, renderer encoding, interaction, animation, visibility, atau performance limit harus meng-update dokumen ini. Efek visual default wajib bounded dan memiliki regression test yang dapat dijalankan tanpa manual inspection sejauh mungkin.
+Setiap perubahan node/edge semantic, filtering, extraction rule, confidence threshold, alias handling, reciprocity metric, renderer encoding, directional animation, visibility, atau performance limit harus meng-update dokumen ini dan relevant tests. Directional evidence harus explainable dari timesheet row; jangan mengubah arah signal berdasarkan heuristic visual yang tidak memiliki evidence data.
