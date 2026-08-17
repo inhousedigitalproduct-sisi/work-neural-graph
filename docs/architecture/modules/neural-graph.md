@@ -49,13 +49,26 @@ shared edges + directional evidence
 - Source selalu nilai `employee` dari row timesheet.
 - Target hanya boleh employee lain dari canonical employee roster aktif yang ditemukan di `note`.
 - `note` adalah source text v1; `summary` tidak digunakan untuk directional acknowledgement agar semantic tetap eksplisit.
-- Matching deterministic: full canonical name `1.00`, manual alias `0.98`, unique two-word alias `0.95`, unique automatic single-token alias `0.88`.
-- Threshold default adalah **0.90**; automatic single-token alias tidak menghasilkan evidence secara default. Nickname pendek harus ditambahkan secara eksplisit ke `config/employee_aliases.json`.
-- Alias yang dimiliki lebih dari satu employee dianggap ambiguous dan tidak digunakan.
+- Matching deterministic: full canonical name `1.00`, manual alias `0.98`, unique two-word alias `0.95`, unique automatic single-token alias `0.92`.
+- Threshold default adalah **0.90**. Single-token name boleh menghasilkan evidence hanya jika token tersebut dimiliki tepat satu employee pada canonical roster. Jika token yang sama dimiliki lebih dari satu employee, alias dianggap ambiguous dan dibuang.
+- Manual alias tetap digunakan untuk nickname yang tidak berasal dari token canonical employee name.
 - Self-mention diabaikan.
 - Satu target dihitung maksimum satu kali per `entry_id`, walaupun nama target muncul berulang di Note yang sama.
 - Evidence row menyimpan source, target, entry id, date, task, project, matched alias, confidence, context pendek, dan note hash agar hasil dapat diaudit.
 - Extraction tidak menggunakan LLM. LLM dapat menjadi enrichment terpisah di masa depan untuk mengklasifikasikan jenis interaksi, bukan menentukan identitas employee.
+
+## Extraction Diagnostics Contract
+
+UI menampilkan counter ringan untuk membantu membedakan masalah extraction dengan masalah renderer:
+
+- `notes_scanned`: jumlah Note non-empty pada scope aktif.
+- `notes_with_accepted_evidence`: jumlah timesheet entry yang menghasilkan minimal satu target valid.
+- `notes_without_accepted_evidence`: Note non-empty yang tidak menghasilkan target valid; ini dapat berarti Note tidak menyebut employee lain atau candidate name tidak lolos matching.
+- `accepted_evidence`: jumlah source-target evidence setelah dedupe per entry.
+- `directional_pairs`: jumlah arah acknowledgement teragregasi.
+- `visible_signals`: jumlah directional signal yang juga memiliki shared-task edge pada graph yang sedang tampil.
+
+Jika shared-task edge ada tetapi `visible_signals = 0`, investigasi dilakukan pada Note/matching/visible-edge join sebelum mengubah canvas renderer.
 
 ## Acknowledgement Insight Contract
 
@@ -102,7 +115,7 @@ Contoh:
 }
 ```
 
-Config baseline boleh kosong (`{}`). Alias yang ambiguous terhadap employee lain tetap tidak boleh menghasilkan evidence.
+Config baseline boleh kosong (`{}`). Unique canonical single-token matching tidak membutuhkan config; config digunakan untuk nickname tambahan. Alias yang ambiguous terhadap employee lain tetap tidak boleh menghasilkan evidence.
 
 ## Current Risks and Non-standard Code
 
@@ -110,7 +123,7 @@ Config baseline boleh kosong (`{}`). Alias yang ambiguous terhadap employee lain
 - Page menggunakan `AnalyticsService` yang saat ini membangun legacy `GraphService/GraphBuilder` untuk analytics snapshot, walaupun visual graph sudah collaboration-based.
 - Sigma HTML adalah large Python f-string berisi CSS/JS, sehingga raw string escaping dan regression risk tinggi.
 - CDN availability adalah runtime dependency untuk interactive renderer.
-- Note quality dan naming convention menentukan recall extraction. Conservative matching sengaja lebih memilih false-negative daripada false-positive.
+- Note quality dan naming convention menentukan recall extraction. Unique-token matching meningkatkan recall, tetapi ambiguity gate tetap wajib untuk menahan false-positive.
 
 ## Refactor Recommendations
 
@@ -125,9 +138,9 @@ Config baseline boleh kosong (`{}`). Alias yang ambiguous terhadap employee lain
 
 Coverage utama: `tests/test_collaboration_graph.py`, `test_graph_builder.py`, `test_graph_visualizer.py`, `test_collaboration_mentions.py`, dan `test_pinball_animation.py`.
 
-- `test_collaboration_mentions.py` menguji one-way extraction, dedupe per entry, conservative alias threshold, manual alias, mutual/one-sided/silent/mention-only classification, reciprocity, dan filtering signal ke visible shared edge.
+- `test_collaboration_mentions.py` menguji one-way extraction, dedupe per entry, unique single-token matching, ambiguous-token rejection, manual nickname alias, extraction diagnostics, mutual/one-sided/silent/mention-only classification, reciprocity, dan filtering signal ke visible shared edge.
 - `test_pinball_animation.py` memastikan animation menerima explicit directional signals, bergerak one-way (bukan bounce), bounded, visible, tanpa heavy gradient/shadow effect, reduced-motion handling, dan invalid viewport coordinate guard.
 
 ## Change Contract
 
-Setiap perubahan node/edge semantic, filtering, extraction rule, confidence threshold, alias handling, reciprocity metric, renderer encoding, directional animation, visibility, atau performance limit harus meng-update dokumen ini dan relevant tests. Directional evidence harus explainable dari timesheet row; jangan mengubah arah signal berdasarkan heuristic visual yang tidak memiliki evidence data.
+Setiap perubahan node/edge semantic, filtering, extraction rule, confidence threshold, alias handling, diagnostics, reciprocity metric, renderer encoding, directional animation, visibility, atau performance limit harus meng-update dokumen ini dan relevant tests. Directional evidence harus explainable dari timesheet row; jangan mengubah arah signal berdasarkan heuristic visual yang tidak memiliki evidence data.

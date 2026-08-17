@@ -2,6 +2,7 @@ import pandas as pd
 
 from src.graph.collaboration_mentions import (
     build_acknowledgement_insights,
+    build_mention_diagnostics,
     build_visible_directional_signals,
     extract_collaboration_mentions,
 )
@@ -43,8 +44,8 @@ def test_extracts_one_way_mentions_once_per_timesheet_entry() -> None:
     assert result.directional_dataframe.iloc[0]["acknowledgement_entry_count"] == 1
 
 
-def test_manual_single_name_alias_is_allowed_but_automatic_single_name_is_not() -> None:
-    dataframe = _frame(
+def test_unique_automatic_single_name_is_allowed_but_ambiguous_name_is_rejected() -> None:
+    unique_dataframe = _frame(
         [
             {
                 "entry_id": "1",
@@ -55,18 +56,81 @@ def test_manual_single_name_alias_is_allowed_but_automatic_single_name_is_not() 
             }
         ]
     )
-    roster = ["Alice Example", "Bob Builder"]
+    unique_roster = ["Alice Example", "Bob Builder"]
 
-    automatic = extract_collaboration_mentions(dataframe, employee_roster=roster)
-    manual = extract_collaboration_mentions(
-        dataframe,
-        employee_roster=roster,
-        aliases={"Bob Builder": ["Bob"]},
+    unique = extract_collaboration_mentions(unique_dataframe, employee_roster=unique_roster)
+
+    assert unique.evidence_dataframe.iloc[0]["target_employee"] == "Bob Builder"
+    assert unique.evidence_dataframe.iloc[0]["matched_alias"] == "bob"
+    assert unique.evidence_dataframe.iloc[0]["confidence"] == 0.92
+
+    ambiguous_roster = ["Alice Example", "Bob Builder", "Bob Brown"]
+    ambiguous = extract_collaboration_mentions(unique_dataframe, employee_roster=ambiguous_roster)
+
+    assert ambiguous.evidence_dataframe.empty
+    assert ambiguous.directional_dataframe.empty
+
+
+def test_manual_alias_still_supports_nickname_not_present_in_canonical_name() -> None:
+    dataframe = _frame(
+        [
+            {
+                "entry_id": "1",
+                "employee": "Alice Example",
+                "note": "Koordinasi dengan Bobby terkait deployment.",
+                "task_key": "T-1",
+                "project": "Alpha",
+            }
+        ]
     )
 
-    assert automatic.evidence_dataframe.empty
-    assert manual.evidence_dataframe.iloc[0]["target_employee"] == "Bob Builder"
-    assert manual.evidence_dataframe.iloc[0]["confidence"] == 0.98
+    result = extract_collaboration_mentions(
+        dataframe,
+        employee_roster=["Alice Example", "Bob Builder"],
+        aliases={"Bob Builder": ["Bobby"]},
+    )
+
+    assert result.evidence_dataframe.iloc[0]["target_employee"] == "Bob Builder"
+    assert result.evidence_dataframe.iloc[0]["confidence"] == 0.98
+
+
+def test_mention_diagnostics_explain_when_visible_signals_are_missing() -> None:
+    dataframe = _frame(
+        [
+            {
+                "entry_id": "1",
+                "employee": "Alice Example",
+                "note": "Diskusi dengan Bob terkait deployment.",
+                "task_key": "T-1",
+                "project": "Alpha",
+            },
+            {
+                "entry_id": "2",
+                "employee": "Bob Builder",
+                "note": "Implementasi mandiri.",
+                "task_key": "T-1",
+                "project": "Alpha",
+            },
+            {
+                "entry_id": "3",
+                "employee": "Alice Example",
+                "note": None,
+                "task_key": "T-2",
+                "project": "Alpha",
+            },
+        ]
+    )
+    result = extract_collaboration_mentions(dataframe, employee_roster=["Alice Example", "Bob Builder"])
+    diagnostics = build_mention_diagnostics(dataframe, result, visible_signals=[])
+
+    assert diagnostics == {
+        "notes_scanned": 2,
+        "notes_with_accepted_evidence": 1,
+        "notes_without_accepted_evidence": 1,
+        "accepted_evidence": 1,
+        "directional_pairs": 1,
+        "visible_signals": 0,
+    }
 
 
 def test_builds_mutual_one_sided_silent_and_mention_only_insights() -> None:

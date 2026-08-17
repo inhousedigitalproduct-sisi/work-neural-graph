@@ -100,15 +100,16 @@ def _employee_candidates(
 
     if len(tokens) >= 2:
         for index in range(len(tokens) - 1):
-            candidates[" ".join(tokens[index : index + 2])] = max(
-                candidates.get(" ".join(tokens[index : index + 2]), 0.0),
-                0.95,
-            )
-        candidates[f"{tokens[0]} {tokens[-1]}"] = max(candidates.get(f"{tokens[0]} {tokens[-1]}", 0.0), 0.95)
+            pair = " ".join(tokens[index : index + 2])
+            candidates[pair] = max(candidates.get(pair, 0.0), 0.95)
+        first_last = f"{tokens[0]} {tokens[-1]}"
+        candidates[first_last] = max(candidates.get(first_last, 0.0), 0.95)
 
     for token in tokens:
         if len(token) >= 4 and not token.isdigit():
-            candidates[token] = max(candidates.get(token, 0.0), 0.88)
+            # A single token is accepted only after _build_alias_index proves that
+            # it belongs to exactly one employee in the active canonical roster.
+            candidates[token] = max(candidates.get(token, 0.0), 0.92)
 
     for alias in manual_aliases.get(employee, ()):  # Manual aliases may safely be single-token nicknames.
         normalized_alias = normalize_person_text(alias)
@@ -133,6 +134,9 @@ def _build_alias_index(
 
     by_first_token: dict[str, list[tuple[tuple[str, ...], str, str, float]]] = defaultdict(list)
     for alias, owners in alias_owners.items():
+        # Ambiguous aliases are intentionally discarded. This is the safety gate
+        # that allows unique single-token names while rejecting names such as
+        # "Budi" when more than one employee owns that token.
         if len(owners) != 1:
             continue
         employee, confidence = next(iter(owners.items()))
@@ -281,6 +285,36 @@ def extract_collaboration_mentions(
         ascending=[False, True, True],
     ).reset_index(drop=True)
     return CollaborationMentionResult(evidence, directional)
+
+
+def build_mention_diagnostics(
+    dataframe: pd.DataFrame,
+    result: CollaborationMentionResult,
+    visible_signals: Sequence[Mapping[str, object]] | None = None,
+    *,
+    note_column: str = "note",
+) -> dict[str, int]:
+    """Return compact, explainable counters for troubleshooting missing directional dots."""
+    notes_scanned = 0
+    if not dataframe.empty and note_column in dataframe.columns:
+        notes_scanned = int(dataframe[note_column].map(_safe_text).notna().sum())
+
+    accepted_note_count = 0
+    if not result.evidence_dataframe.empty and "entry_id" in result.evidence_dataframe.columns:
+        accepted_note_count = int(result.evidence_dataframe["entry_id"].astype(str).nunique())
+
+    accepted_evidence = int(len(result.evidence_dataframe))
+    directional_pairs = int(len(result.directional_dataframe))
+    visible_signal_count = int(len(list(visible_signals or ())))
+
+    return {
+        "notes_scanned": notes_scanned,
+        "notes_with_accepted_evidence": accepted_note_count,
+        "notes_without_accepted_evidence": max(0, notes_scanned - accepted_note_count),
+        "accepted_evidence": accepted_evidence,
+        "directional_pairs": directional_pairs,
+        "visible_signals": visible_signal_count,
+    }
 
 
 def build_acknowledgement_insights(

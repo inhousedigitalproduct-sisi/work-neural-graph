@@ -9,6 +9,7 @@ from src.graph.builder import GraphFilterConfig, apply_graph_filters
 from src.graph.collaboration import build_collaboration_graph
 from src.graph.collaboration_mentions import (
     build_acknowledgement_insights,
+    build_mention_diagnostics,
     build_visible_directional_signals,
     extract_collaboration_mentions,
     load_employee_aliases,
@@ -164,6 +165,7 @@ acknowledgement_insights = build_acknowledgement_insights(
     result.edge_dataframe,
     mention_result.directional_dataframe,
 )
+mention_diagnostics = build_mention_diagnostics(filtered, mention_result, directional_signals)
 
 st.subheader("Peta kolaborasi interaktif")
 st.caption(
@@ -171,15 +173,17 @@ st.caption(
     "menyebut collaborator pada Note menuju karyawan yang disebut. Jika kedua pihak saling menyebut, dua dot "
     "bergerak berlawanan sebagai dua evidence yang berbeda."
 )
-if mention_result.evidence_dataframe.empty:
+st.caption(
+    f"Extraction diagnostics: {mention_diagnostics['notes_scanned']:,} Note dipindai • "
+    f"{mention_diagnostics['notes_with_accepted_evidence']:,} Note punya evidence • "
+    f"{mention_diagnostics['accepted_evidence']:,} evidence diterima • "
+    f"{mention_diagnostics['directional_pairs']:,} arah acknowledgement • "
+    f"{mention_diagnostics['visible_signals']:,} signal terlihat."
+)
+if mention_diagnostics["visible_signals"] == 0:
     st.caption(
-        "Belum ada directional acknowledgement dengan confidence >= 90% pada Note di scope aktif; karena itu garis dapat tampil tanpa dot."
-    )
-else:
-    st.caption(
-        f"Directional evidence: {len(mention_result.evidence_dataframe):,} timesheet evidence • "
-        f"{len(mention_result.directional_dataframe):,} arah acknowledgement • "
-        f"{len(directional_signals):,} arah terlihat pada graph saat ini."
+        "Jika garis terlihat tetapi signal = 0, Note pada scope aktif belum menghasilkan acknowledgement yang cocok "
+        "dengan shared-task edge yang sedang tampil. Nama satu kata yang unik di roster sekarang diterima; nama ambigu tetap ditolak."
     )
 if result.summary.collaboration_links == 0:
     st.info("Tidak ada task yang dikerjakan oleh lebih dari satu karyawan pada scope aktif. Node tetap ditampilkan tanpa garis.")
@@ -203,9 +207,10 @@ with st.expander("Cara membaca Collaboration Graph", expanded=False):
 - **Warna & ketebalan garis = frekuensi kolaborasi**, dihitung dari jumlah task bersama untuk pasangan karyawan tersebut.
 - **Bar scale** menunjukkan rentang frekuensi kolaborasi dari paling sedikit ke paling banyak pada scope aktif.
 - **Dot kecil satu arah = acknowledgement dari Note timesheet.** Source adalah pemilik timesheet; target adalah karyawan yang disebut secara deterministic dengan confidence minimal 90%.
+- **Nama satu kata yang unik di seluruh roster** diterima dengan confidence 92%. Jika token yang sama dimiliki lebih dari satu karyawan, alias tersebut dianggap ambigu dan tidak menghasilkan signal.
 - Jika **A menyebut B** tetapi B tidak menyebut A, hanya ada dot **A → B**. Jika keduanya saling menyebut, dua directional signal berjalan berlawanan.
 - Satu target hanya dihitung **sekali per timesheet entry**, walaupun namanya disebut berulang kali pada Note yang sama.
-- Nama yang ambigu tidak dipakai sebagai evidence. Alias/nickname eksplisit dapat dikonfigurasi di `config/employee_aliases.json`.
+- Alias/nickname eksplisit yang tidak berasal dari nama canonical dapat dikonfigurasi di `config/employee_aliases.json`.
 - Animasi dibatasi maksimum **120 directional signal terkuat** dan memakai adaptive frame rate agar tetap ringan pada graph padat.
 - **Hover atau klik node** membuat dot pada relasi node tersebut sedikit lebih menonjol tanpa menambahkan glow/gradient berat.
 - **Mention-only** (ada penyebutan tetapi tidak ada shared task) tetap masuk analisis acknowledgement, tetapi belum divisualisasikan sebagai garis agar semantic garis tetap konsisten.
