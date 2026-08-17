@@ -5,13 +5,14 @@ from collections.abc import Sequence
 import networkx as nx
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.colors import sample_colorscale
 
-EDGE_COLOR = "rgba(255,255,255,0.75)"
 HOVER_BG_COLOR = "#111111"
 HOVER_BORDER_COLOR = "#444444"
 LIGHT_FONT_COLOR = "#FFFFFF"
 NODE_BORDER_COLOR = "rgba(255,255,255,0.65)"
 GRAPH_BG_COLOR = "#000000"
+COLLABORATION_COLORSCALE = "YlOrRd"
 
 
 def scale_metric(values: Sequence[float], min_size: float, max_size: float) -> list[float]:
@@ -91,12 +92,20 @@ def _build_related_date_lookup(edge_dataframe: pd.DataFrame) -> dict[str, str]:
     return lookup
 
 
+def _edge_color(value: float, minimum: float, maximum: float) -> str:
+    if maximum <= minimum:
+        normalized = 0.5
+    else:
+        normalized = (float(value) - minimum) / (maximum - minimum)
+    return sample_colorscale(COLLABORATION_COLORSCALE, [normalized])[0]
+
+
 def build_graph_figure(
     graph: nx.Graph,
     node_dataframe: pd.DataFrame,
     edge_dataframe: pd.DataFrame,
     node_size_metric: str = "total_hours",
-    edge_width_metric: str = "task_count",
+    edge_width_metric: str = "collaboration_count",
     show_node_labels: bool = True,
     activity_dataframe: pd.DataFrame | None = None,
 ) -> go.Figure:
@@ -113,18 +122,25 @@ def build_graph_figure(
         return figure
 
     positions = nx.spring_layout(graph, seed=42, k=None)
-    edge_widths = scale_metric(edge_dataframe[edge_width_metric].tolist(), 1.5, 8.0) if not edge_dataframe.empty else []
+    effective_edge_metric = edge_width_metric if edge_width_metric in edge_dataframe.columns else "task_count"
+    edge_values = edge_dataframe[effective_edge_metric].astype(float).tolist() if not edge_dataframe.empty else []
+    edge_widths = scale_metric(edge_values, 1.5, 8.0) if edge_values else []
+    edge_min = min(edge_values) if edge_values else 0.0
+    edge_max = max(edge_values) if edge_values else 0.0
+
     for edge_index, edge in enumerate(edge_dataframe.to_dict(orient="records")):
         source = edge["source"].date().isoformat()
         target = edge["target"].date().isoformat()
         x0, y0 = positions[source]
         x1, y1 = positions[target]
+        collaboration_count = float(edge.get("collaboration_count", edge.get("task_count", 0)))
+        edge_color = _edge_color(float(edge.get(effective_edge_metric, 0)), edge_min, edge_max)
         figure.add_trace(
             go.Scatter(
                 x=[x0, x1],
                 y=[y0, y1],
                 mode="lines",
-                line={"width": edge_widths[edge_index], "color": EDGE_COLOR},
+                line={"width": edge_widths[edge_index], "color": edge_color},
                 hoverinfo="skip",
                 showlegend=False,
             )
@@ -141,6 +157,7 @@ def build_graph_figure(
                         _format_date(target),
                         edge["gap_days"],
                         edge["task_count"],
+                        int(collaboration_count),
                         ", ".join(edge["shared_tasks"][:5]),
                         ", ".join(edge["employees"][:5]),
                         ", ".join(edge["projects"][:5]),
@@ -153,24 +170,53 @@ def build_graph_figure(
                     "<b>Alasan relasi:</b> task yang sama muncul pada kedua tanggal<br>"
                     "<b>Jarak tanggal:</b> %{customdata[2]} hari<br>"
                     "<b>Jumlah task terkait:</b> %{customdata[3]}<br>"
-                    "<b>Task:</b> %{customdata[4]}<br>"
-                    "<b>Pegawai:</b> %{customdata[5]}<br>"
-                    "<b>Proyek:</b> %{customdata[6]}<br>"
-                    "<b>Total jam terkait:</b> %{customdata[7]}<extra></extra>"
+                    "<b>Frekuensi kolaborasi:</b> %{customdata[4]}<br>"
+                    "<b>Task:</b> %{customdata[5]}<br>"
+                    "<b>Pegawai:</b> %{customdata[6]}<br>"
+                    "<b>Proyek:</b> %{customdata[7]}<br>"
+                    "<b>Total jam terkait:</b> %{customdata[8]}<extra></extra>"
                 ),
                 showlegend=False,
             )
         )
 
+    if edge_values:
+        figure.add_trace(
+            go.Scatter(
+                x=[None, None],
+                y=[None, None],
+                mode="markers",
+                marker={
+                    "size": 0.1,
+                    "color": [edge_min, edge_max],
+                    "cmin": edge_min,
+                    "cmax": edge_max if edge_max > edge_min else edge_min + 1,
+                    "colorscale": COLLABORATION_COLORSCALE,
+                    "showscale": True,
+                    "colorbar": {
+                        "orientation": "h",
+                        "x": 0.5,
+                        "xanchor": "center",
+                        "y": -0.13,
+                        "yanchor": "top",
+                        "len": 0.52,
+                        "thickness": 14,
+                        "title": {
+                            "text": "Frekuensi kolaborasi",
+                            "side": "top",
+                            "font": {"color": LIGHT_FONT_COLOR},
+                        },
+                        "tickfont": {"color": LIGHT_FONT_COLOR},
+                        "bgcolor": "rgba(0,0,0,0)",
+                        "outlinecolor": NODE_BORDER_COLOR,
+                    },
+                },
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+
     node_sizes = scale_metric(node_dataframe[node_size_metric].tolist(), 18, 48)
-    metric_labels = {
-        "total_hours": "Total jam kerja",
-        "unique_tasks": "Jumlah task",
-        "unique_employees": "Jumlah pegawai",
-        "unique_projects": "Jumlah proyek",
-        "degree": "Jumlah relasi tanggal",
-    }
-    metric_label = metric_labels.get(node_size_metric, node_size_metric.replace("_", " ").title())
     activity_lookup = _build_node_activity_lookup(activity_dataframe)
     related_date_lookup = _build_related_date_lookup(edge_dataframe)
 
@@ -211,26 +257,7 @@ def build_graph_figure(
                 "color": node_dataframe[node_size_metric].tolist(),
                 "colorscale": "YlGnBu",
                 "line": {"width": 1, "color": NODE_BORDER_COLOR},
-                "showscale": True,
-                "colorbar": {
-                    # A horizontal legend avoids looking like a Y axis. Node position is
-                    # determined exclusively by the network layout, not by this metric.
-                    "orientation": "h",
-                    "x": 0.5,
-                    "xanchor": "center",
-                    "y": -0.13,
-                    "yanchor": "top",
-                    "len": 0.52,
-                    "thickness": 14,
-                    "title": {
-                        "text": f"Warna node — {metric_label}",
-                        "side": "top",
-                        "font": {"color": LIGHT_FONT_COLOR},
-                    },
-                    "tickfont": {"color": LIGHT_FONT_COLOR},
-                    "bgcolor": "rgba(0,0,0,0)",
-                    "outlinecolor": NODE_BORDER_COLOR,
-                },
+                "showscale": False,
             },
             customdata=customdata,
             hovertemplate=(
