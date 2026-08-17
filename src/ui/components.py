@@ -148,6 +148,8 @@ def render_llm_provider_selector(config: AppConfig) -> str:
 def render_shared_filters(
     dataframe: pd.DataFrame,
     include_strategy: bool = False,
+    include_employee_filter: bool = True,
+    project_label: str = "Projects",
 ) -> tuple[GraphFilterConfig, GraphStrategy | None]:
     source_dataframe = dataframe.copy()
     source_dataframe["work_date"] = pd.to_datetime(source_dataframe["work_date"])
@@ -157,19 +159,24 @@ def render_shared_filters(
     with st.sidebar:
         st.header("Dataset Filters")
         date_range = st.date_input("Date Range", value=(min_date, max_date), min_value=min_date, max_value=max_date)
-        available_employees = sorted(source_dataframe["employee"].dropna().unique().tolist())
-        employee_key = "filter_employee_names"
-        st.session_state[employee_key] = [
-            value for value in st.session_state.get(employee_key, []) if value in available_employees
-        ]
-        selected_employees = st.multiselect("Employees", available_employees, key=employee_key)
+
+        selected_employees: list[str] = []
+        if include_employee_filter:
+            available_employees = sorted(source_dataframe["employee"].dropna().unique().tolist())
+            employee_key = "filter_employee_names"
+            st.session_state[employee_key] = [
+                value for value in st.session_state.get(employee_key, []) if value in available_employees
+            ]
+            selected_employees = st.multiselect("Employees", available_employees, key=employee_key)
+        else:
+            st.session_state["filter_employee_names"] = []
 
         available_projects = sorted(source_dataframe["project"].dropna().unique().tolist())
         project_key = "filter_projects"
         st.session_state[project_key] = [
             value for value in st.session_state.get(project_key, []) if value in available_projects
         ]
-        selected_projects = st.multiselect("Projects", available_projects, key=project_key)
+        selected_projects = st.multiselect(project_label, available_projects, key=project_key)
         task_options = source_dataframe.sort_values("task")["task_key"].unique().tolist()
         task_key = "filter_task_keys"
         st.session_state[task_key] = [
