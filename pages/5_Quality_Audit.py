@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 from src.graph.builder import apply_graph_filters
@@ -73,10 +74,132 @@ def semantic_signature(row_ids: set[int], semantic_threshold: float) -> tuple:
     )
 
 
+def affected_pair_ids(dataframe: pd.DataFrame) -> set[int]:
+    if dataframe.empty or "Row 1" not in dataframe.columns or "Row 2" not in dataframe.columns:
+        return set()
+    return set(dataframe["Row 1"].astype(int).tolist()) | set(dataframe["Row 2"].astype(int).tolist())
+
+
+@st.cache_data(show_spinner=False)
+def build_quality_trend(dataframe: pd.DataFrame, grouping: str) -> pd.DataFrame:
+    """Recalculate deterministic quality metrics per time bucket for comparable historical trends."""
+    if dataframe.empty:
+        return pd.DataFrame()
+
+    source = dataframe.copy()
+    source["work_date"] = pd.to_datetime(source["work_date"], errors="coerce")
+    source = source[source["work_date"].notna()].copy()
+    if source.empty:
+        return pd.DataFrame()
+
+    frequency = "M" if grouping == "Monthly" else "W-SUN"
+    source["period_start"] = source["work_date"].dt.to_period(frequency).dt.start_time
+    rows: list[dict[str, object]] = []
+
+    for period_start, period_data in source.groupby("period_start", sort=True):
+        prepared = prepare_quality_dataframe(period_data.drop(columns=["period_start"], errors="ignore"))
+        duration = find_duration_issues(prepared)
+        copies = find_copy_pairs(prepared, DEFAULT_FUZZY_THRESHOLD)
+        overlaps = find_overlap_pairs(prepared)
+        kpis, entries, repeated, _ = managerial_summary(prepared, copies, overlaps, duration)
+
+        total = max(int(kpis["total"]), 1)
+        exact_pairs = copies[copies["Jenis"] == "Exact copy"] if not copies.empty and "Jenis" in copies.columns else pd.DataFrame()
+        exact_rate = len(affected_pair_ids(exact_pairs)) / total * 100
+        overlap_rate = float(kpis["overlap"]) / total * 100
+        duration_rate = float(kpis["duration"]) / total * 100
+        repeated_long_rate = (
+            float(entries["Berulang dan lama"].mean()) * 100
+            if not entries.empty and "Berulang dan lama" in entries.columns
+            else 0.0
+        )
+
+        rows.append(
+            {
+                "period_start": pd.Timestamp(period_start),
+                "entries": int(kpis["total"]),
+                "copy_rate": float(kpis["copy_rate"]),
+                "exact_copy_rate": round(exact_rate, 1),
+                "minimal_note_rate": float(kpis["minimal_rate"]),
+                "writing_quality": float(kpis["writing"]),
+                "overlap_rate": round(overlap_rate, 1),
+                "duration_issue_rate": round(duration_rate, 1),
+                "repeated_long_rate": round(repeated_long_rate, 1),
+                "effectiveness": float(kpis["effectiveness"]),
+                "repeated_groups": int(len(repeated)),
+            }
+        )
+
+    return pd.DataFrame(rows).sort_values("period_start").reset_index(drop=True)
+
+
+def build_score_trend_figure(trend: pd.DataFrame) -> go.Figure:
+    figure = go.Figure()
+    figure.add_trace(go.Scatter(
+        x=trend["period_start"],
+        y=trend["effectiveness"],
+        mode="lines+markers",
+        name="Overall Quality",
+        hovertemplate="%{x|%d %b %Y}<br>Overall Quality: %{y:.1f}<extra></extra>",
+    ))
+    figure.add_trace(go.Scatter(
+        x=trend["period_start"],
+        y=trend["writing_quality"],
+        mode="lines+markers",
+        name="Writing Quality",
+        hovertemplate="%{x|%d %b %Y}<br>Writing Quality: %{y:.1f}<extra></extra>",
+    ))
+    figure.update_layout(
+        height=380,
+        margin={"l": 20, "r": 20, "t": 20, "b": 20},
+        xaxis_title="Periode",
+        yaxis_title="Score (0–100)",
+        yaxis={"range": [0, 105]},
+        hovermode="x unified",
+        legend={"orientation": "h", "y": 1.08},
+    )
+    return figure
+
+
+def build_issue_trend_figure(trend: pd.DataFrame) -> go.Figure:
+    figure = go.Figure()
+    metrics = [
+        ("copy_rate", "Copy / Near-copy"),
+        ("exact_copy_rate", "Exact Copy"),
+        ("minimal_note_rate", "Note Minim"),
+        ("overlap_rate", "Overlap"),
+        ("duration_issue_rate", "Duration Issue"),
+        ("repeated_long_rate", "Repeated & Long"),
+    ]
+    for column, label in metrics:
+        figure.add_trace(go.Scatter(
+            x=trend["period_start"],
+            y=trend[column],
+            mode="lines+markers",
+            name=label,
+            hovertemplate=f"%{{x|%d %b %Y}}<br>{label}: %{{y:.1f}}%<extra></extra>",
+        ))
+    figure.update_layout(
+        height=470,
+        margin={"l": 20, "r": 20, "t": 20, "b": 20},
+        xaxis_title="Periode",
+        yaxis_title="Rate (%)",
+        hovermode="x unified",
+        legend={"orientation": "h", "y": 1.12},
+    )
+    return figure
+
+
+def metric_delta(trend: pd.DataFrame, column: str) -> float | None:
+    if len(trend) < 2:
+        return None
+    return round(float(trend.iloc[-1][column]) - float(trend.iloc[-2][column]), 1)
+
+
 st.title("Audit Kualitas Timesheet")
 st.caption(
-    "Audit deterministic dijalankan saat dataset divalidasi di halaman Load Data. "
-    "Halaman ini digunakan untuk membaca hasil dan evidence pada filter aktif."
+    "Audit deterministic dijalankan saat dataset divalidasi. Gunakan Current Snapshot untuk evidence saat ini "
+    "dan Trend Analysis untuk mengevaluasi perubahan kualitas dari waktu ke waktu."
 )
 
 source_dataframe = dataset_service.load_active_dataset()
@@ -115,43 +238,112 @@ if not duration.empty:
 
 kpis, entry_scores, repeated, _ = managerial_summary(filtered, copies, overlaps, duration)
 
-st.subheader("Ringkasan audit")
-a, b, c, d = st.columns(4)
-a.metric("Indikasi copy-paste", f"{kpis['copy']} / {kpis['total']}", f"{kpis['copy_rate']}%")
-b.metric("Kualitas penulisan", f"{kpis['writing']} / 100")
-c.metric("Entri overlap", kpis["overlap"])
-d.metric("Indikator efektivitas", f"{kpis['effectiveness']} / 100")
-st.caption(
-    f"{kpis['minimal']} entri ({kpis['minimal_rate']}%) memiliki Note minim; "
-    f"{kpis['duration']} entri memerlukan validasi durasi. "
-    "Near-copy dihitung sekali saat validasi dataset; filter hanya menyaring hasil audit yang sudah tersedia."
-)
+snapshot_tab, trend_tab = st.tabs(["Current Snapshot", "Trend Analysis"])
 
-entries_tab, copy_tab, overlap_tab, duration_tab, repeated_tab = st.tabs([
-    "Kualitas Note", "Copy / Near-copy", "Overlap", "Durasi", "Aktivitas Berulang"
-])
-with entries_tab:
-    st.dataframe(entry_scores, use_container_width=True, hide_index=True)
-with copy_tab:
-    if copies.empty:
-        st.success("Tidak ada exact-copy atau near-copy pada scope aktif.")
+with snapshot_tab:
+    st.subheader("Ringkasan audit")
+    a, b, c, d = st.columns(4)
+    a.metric("Indikasi copy-paste", f"{kpis['copy']} / {kpis['total']}", f"{kpis['copy_rate']}%")
+    b.metric("Kualitas penulisan", f"{kpis['writing']} / 100")
+    c.metric("Entri overlap", kpis["overlap"])
+    d.metric("Indikator efektivitas", f"{kpis['effectiveness']} / 100")
+    st.caption(
+        f"{kpis['minimal']} entri ({kpis['minimal_rate']}%) memiliki Note minim; "
+        f"{kpis['duration']} entri memerlukan validasi durasi. "
+        "Near-copy dihitung sekali saat validasi dataset; filter hanya menyaring hasil audit yang sudah tersedia."
+    )
+
+    entries_tab, copy_tab, overlap_tab, duration_tab, repeated_tab = st.tabs([
+        "Kualitas Note", "Copy / Near-copy", "Overlap", "Durasi", "Aktivitas Berulang"
+    ])
+    with entries_tab:
+        st.dataframe(entry_scores, use_container_width=True, hide_index=True)
+    with copy_tab:
+        if copies.empty:
+            st.success("Tidak ada exact-copy atau near-copy pada scope aktif.")
+        else:
+            st.dataframe(copies, use_container_width=True, hide_index=True)
+    with overlap_tab:
+        if overlaps.empty:
+            st.success("Tidak ada overlap waktu yang terdeteksi pada scope aktif.")
+        else:
+            st.dataframe(overlaps, use_container_width=True, hide_index=True)
+    with duration_tab:
+        if duration.empty:
+            st.success("Tidak ada masalah konsistensi durasi yang terdeteksi pada scope aktif.")
+        else:
+            st.dataframe(duration, use_container_width=True, hide_index=True)
+    with repeated_tab:
+        if repeated.empty:
+            st.info("Tidak ada aktivitas berulang pada scope aktif.")
+        else:
+            st.dataframe(repeated, use_container_width=True, hide_index=True)
+
+with trend_tab:
+    st.subheader("Quality Trend")
+    st.caption(
+        "Setiap titik dihitung ulang dari data timesheet pada periodenya agar rate tetap comparable. "
+        "Untuk issue rate, semakin rendah umumnya semakin baik; untuk score, semakin tinggi semakin baik."
+    )
+    grouping = st.segmented_control(
+        "Grouping",
+        options=["Monthly", "Weekly"],
+        default="Monthly",
+        key="quality_trend_grouping",
+    ) or "Monthly"
+
+    with st.spinner("Menghitung trend audit deterministic…"):
+        trend = build_quality_trend(filtered, grouping)
+
+    if trend.empty:
+        st.info("Belum ada data yang cukup untuk membentuk trend pada scope aktif.")
     else:
-        st.dataframe(copies, use_container_width=True, hide_index=True)
-with overlap_tab:
-    if overlaps.empty:
-        st.success("Tidak ada overlap waktu yang terdeteksi pada scope aktif.")
-    else:
-        st.dataframe(overlaps, use_container_width=True, hide_index=True)
-with duration_tab:
-    if duration.empty:
-        st.success("Tidak ada masalah konsistensi durasi yang terdeteksi pada scope aktif.")
-    else:
-        st.dataframe(duration, use_container_width=True, hide_index=True)
-with repeated_tab:
-    if repeated.empty:
-        st.info("Tidak ada aktivitas berulang pada scope aktif.")
-    else:
-        st.dataframe(repeated, use_container_width=True, hide_index=True)
+        latest = trend.iloc[-1]
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric(
+            "Overall Quality",
+            f"{float(latest['effectiveness']):.1f}",
+            metric_delta(trend, "effectiveness"),
+        )
+        k2.metric(
+            "Copy / Near-copy",
+            f"{float(latest['copy_rate']):.1f}%",
+            metric_delta(trend, "copy_rate"),
+            delta_color="inverse",
+        )
+        k3.metric(
+            "Note Minim",
+            f"{float(latest['minimal_note_rate']):.1f}%",
+            metric_delta(trend, "minimal_note_rate"),
+            delta_color="inverse",
+        )
+        k4.metric(
+            "Writing Quality",
+            f"{float(latest['writing_quality']):.1f}",
+            metric_delta(trend, "writing_quality"),
+        )
+
+        st.markdown("#### Trend score")
+        st.plotly_chart(build_score_trend_figure(trend), use_container_width=True)
+
+        st.markdown("#### Trend issue rate")
+        st.plotly_chart(build_issue_trend_figure(trend), use_container_width=True)
+
+        with st.expander("Data trend lengkap", expanded=False):
+            trend_view = trend.rename(columns={
+                "period_start": "Periode",
+                "entries": "Entri",
+                "copy_rate": "Copy/Near-copy (%)",
+                "exact_copy_rate": "Exact Copy (%)",
+                "minimal_note_rate": "Note Minim (%)",
+                "writing_quality": "Writing Quality",
+                "overlap_rate": "Overlap (%)",
+                "duration_issue_rate": "Duration Issue (%)",
+                "repeated_long_rate": "Repeated & Long (%)",
+                "effectiveness": "Overall Quality",
+                "repeated_groups": "Repeated Groups",
+            })
+            st.dataframe(trend_view, use_container_width=True, hide_index=True)
 
 st.divider()
 st.subheader("Analisis Semantik & Topic Grouping")
