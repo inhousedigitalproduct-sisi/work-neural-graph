@@ -21,6 +21,8 @@ COMMUNITY_COLORS = [
     "#fb7185",
 ]
 ISOLATED_COLOR = "#475569"
+COLLABORATION_LOW_COLOR = (71, 85, 105)
+COLLABORATION_HIGH_COLOR = (251, 146, 60)
 
 
 def _sqrt_scaled(values: pd.Series, minimum: float = 3.8, maximum: float = 9.5) -> dict[str, float]:
@@ -54,7 +56,7 @@ def _linear_scaled(values: pd.Series, minimum: float = 0.7, maximum: float = 3.5
     }
 
 
-def _community_map(graph: nx.Graph) -> tuple[dict[str, int], list[dict[str, Any]]]:
+def _community_map(graph: nx.Graph) -> dict[str, int]:
     mapping: dict[str, int] = {}
     connected = graph.subgraph([node for node, degree in graph.degree() if degree > 0]).copy()
     communities: list[set[str]] = []
@@ -71,34 +73,27 @@ def _community_map(graph: nx.Graph) -> tuple[dict[str, int], list[dict[str, Any]
             communities = [set(component) for component in nx.connected_components(connected)]
 
     communities.sort(key=lambda group: (-len(group), sorted(group)[0] if group else ""))
-    legend: list[dict[str, Any]] = []
     for index, members in enumerate(communities):
         community_id = index + 1
-        color = COMMUNITY_COLORS[index % len(COMMUNITY_COLORS)]
         for node in members:
             mapping[str(node)] = community_id
-        legend.append(
-            {
-                "id": community_id,
-                "label": f"Community {community_id}",
-                "color": color,
-                "count": len(members),
-            }
-        )
 
-    isolated = [str(node) for node, degree in graph.degree() if degree == 0]
-    for node in isolated:
-        mapping[node] = 0
-    if isolated:
-        legend.append(
-            {
-                "id": 0,
-                "label": "Isolated",
-                "color": ISOLATED_COLOR,
-                "count": len(isolated),
-            }
-        )
-    return mapping, legend
+    for node, degree in graph.degree():
+        if degree == 0:
+            mapping[str(node)] = 0
+    return mapping
+
+
+def _edge_color(value: float, minimum: float, maximum: float) -> str:
+    if maximum <= minimum:
+        ratio = 0.5
+    else:
+        ratio = max(0.0, min(1.0, (float(value) - minimum) / (maximum - minimum)))
+    rgb = tuple(
+        round(low + (high - low) * ratio)
+        for low, high in zip(COLLABORATION_LOW_COLOR, COLLABORATION_HIGH_COLOR)
+    )
+    return "#{:02x}{:02x}{:02x}".format(*rgb)
 
 
 def build_sigma_html(
@@ -110,7 +105,7 @@ def build_sigma_html(
     edge_width_metric: str,
     show_labels: bool,
 ) -> str:
-    """Build a Sigma.js collaboration view optimized for dense networks."""
+    """Build an interactive Sigma.js employee-collaboration view."""
     if node_dataframe.empty:
         return "<div style='padding:24px;color:#94a3b8'>Tidak ada node untuk ditampilkan.</div>"
 
@@ -124,10 +119,18 @@ def build_sigma_html(
         iterations=220,
         scale=1.35,
     )
+
     node_sizes = _sqrt_scaled(node_dataframe[node_size_metric])
     edge_sizes = _linear_scaled(edge_dataframe[edge_width_metric]) if not edge_dataframe.empty else {}
-    community_by_node, legend = _community_map(graph)
-    community_color = {item["id"]: item["color"] for item in legend}
+    community_by_node = _community_map(graph)
+
+    collaboration_values = (
+        pd.to_numeric(edge_dataframe["shared_task_count"], errors="coerce").fillna(0.0).tolist()
+        if not edge_dataframe.empty
+        else []
+    )
+    collaboration_min = float(min(collaboration_values)) if collaboration_values else 0.0
+    collaboration_max = float(max(collaboration_values)) if collaboration_values else 0.0
 
     nodes: list[dict[str, Any]] = []
     for index, row in node_dataframe.reset_index(drop=True).iterrows():
@@ -135,6 +138,11 @@ def build_sigma_html(
         x, y = positions.get(employee, (0.0, 0.0))
         community = int(community_by_node.get(employee, 0))
         collaborator_count = int(row.get("collaborator_count", 0))
+        community_color = (
+            COMMUNITY_COLORS[(community - 1) % len(COMMUNITY_COLORS)]
+            if community > 0
+            else ISOLATED_COLOR
+        )
         nodes.append(
             {
                 "id": employee,
@@ -142,8 +150,8 @@ def build_sigma_html(
                 "x": float(x),
                 "y": float(y),
                 "size": float(node_sizes.get(str(index), 6.0)),
-                "base_color": community_color.get(community, ISOLATED_COLOR),
-                "color": community_color.get(community, ISOLATED_COLOR),
+                "base_color": community_color,
+                "color": community_color,
                 "community": community,
                 "isolated": collaborator_count == 0,
                 "collaborator_count": collaborator_count,
@@ -158,14 +166,16 @@ def build_sigma_html(
 
     edges: list[dict[str, Any]] = []
     for index, row in edge_dataframe.reset_index(drop=True).iterrows():
+        collaboration_count = int(row.get("shared_task_count", 0))
         edges.append(
             {
                 "id": f"edge-{index}",
                 "source": str(row["source"]),
                 "target": str(row["target"]),
                 "size": float(edge_sizes.get(str(index), 1.0)),
-                "color": "#526175",
-                "shared_task_count": int(row.get("shared_task_count", 0)),
+                "color": _edge_color(collaboration_count, collaboration_min, collaboration_max),
+                "collaboration_count": collaboration_count,
+                "shared_task_count": collaboration_count,
                 "shared_tasks": list(row.get("shared_tasks", []) or []),
                 "projects": list(row.get("projects", []) or []),
                 "related_hours": float(row.get("related_hours", 0.0)),
@@ -173,7 +183,16 @@ def build_sigma_html(
         )
 
     payload = json.dumps(
-        {"nodes": nodes, "edges": edges, "legend": legend},
+        {
+            "nodes": nodes,
+            "edges": edges,
+            "collaboration_scale": {
+                "min": int(collaboration_min),
+                "max": int(collaboration_max),
+                "low_color": "#{:02x}{:02x}{:02x}".format(*COLLABORATION_LOW_COLOR),
+                "high_color": "#{:02x}{:02x}{:02x}".format(*COLLABORATION_HIGH_COLOR),
+            },
+        },
         ensure_ascii=False,
     ).replace("</", "<\\/")
     label_setting = "true" if show_labels else "false"
@@ -194,17 +213,13 @@ def build_sigma_html(
     #stage {{ height:500px; position:relative; border:1px solid #1e293b; background:radial-gradient(circle at center,#0f172a 0,#020617 72%); box-sizing:border-box; }}
     #sigma-container {{ position:absolute; inset:0; }}
     #info-panel {{ position:absolute; display:none; z-index:9; right:14px; top:14px; width:310px; max-height:190px; overflow:auto; padding:11px 13px; border:1px solid #334155; border-radius:10px; background:rgba(15,23,42,.96); box-shadow:0 10px 35px rgba(0,0,0,.35); font-size:12px; line-height:1.45; }}
-    #legend {{ position:absolute; left:14px; bottom:14px; z-index:7; width:220px; max-height:300px; overflow:auto; padding:12px; border:1px solid rgba(71,85,105,.75); border-radius:14px; background:linear-gradient(180deg,rgba(15,23,42,.97),rgba(8,15,30,.93)); box-shadow:0 16px 38px rgba(0,0,0,.32); backdrop-filter:blur(8px); }}
-    .legend-head {{ display:flex; align-items:flex-start; justify-content:space-between; gap:10px; margin-bottom:9px; }}
+    #legend {{ position:absolute; left:14px; bottom:14px; z-index:7; width:260px; padding:13px; border:1px solid rgba(71,85,105,.75); border-radius:14px; background:linear-gradient(180deg,rgba(15,23,42,.97),rgba(8,15,30,.93)); box-shadow:0 16px 38px rgba(0,0,0,.32); backdrop-filter:blur(8px); }}
     .legend-title {{ color:#f8fafc; font-size:12px; font-weight:800; letter-spacing:.02em; }}
-    .legend-subtitle {{ color:#64748b; font-size:10px; margin-top:2px; }}
-    .legend-total {{ color:#94a3b8; font-size:10px; border:1px solid #334155; border-radius:999px; padding:2px 7px; white-space:nowrap; }}
-    .legend-list {{ display:grid; gap:5px; }}
-    .legend-item {{ display:grid; grid-template-columns:5px 1fr auto; align-items:center; min-height:25px; gap:8px; padding:3px 6px 3px 3px; border-radius:7px; color:#cbd5e1; }}
-    .legend-item:hover {{ background:rgba(51,65,85,.28); }}
-    .legend-swatch {{ width:5px; height:22px; border-radius:999px; box-shadow:0 0 12px color-mix(in srgb, var(--legend-color) 35%, transparent); }}
-    .legend-label {{ font-size:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
-    .legend-count {{ min-width:24px; text-align:right; color:#f8fafc; font-weight:700; font-size:10px; }}
+    .legend-subtitle {{ color:#94a3b8; font-size:10px; margin-top:3px; line-height:1.35; }}
+    .scale-bar {{ height:12px; border-radius:999px; margin:12px 0 6px; border:1px solid rgba(255,255,255,.14); }}
+    .scale-labels {{ display:flex; align-items:center; justify-content:space-between; color:#e2e8f0; font-size:10px; font-weight:700; }}
+    .scale-hints {{ display:flex; align-items:center; justify-content:space-between; color:#64748b; font-size:9px; margin-top:2px; }}
+    .legend-note {{ color:#64748b; font-size:9px; margin-top:10px; padding-top:8px; border-top:1px solid rgba(71,85,105,.45); }}
     #detail {{ height:270px; padding:14px; border:1px solid #1e293b; border-top:0; border-radius:0 0 12px 12px; background:#0f172a; font-size:13px; line-height:1.5; box-sizing:border-box; overflow:hidden; }}
     .detail-grid {{ display:grid; grid-template-columns:minmax(220px,.8fr) minmax(320px,1.2fr); gap:18px; height:100%; }}
     .summary-card {{ border:1px solid #243244; border-radius:10px; padding:12px; background:#111827; height:100%; box-sizing:border-box; overflow:hidden; }}
@@ -218,11 +233,11 @@ def build_sigma_html(
     .list-row {{ display:flex; justify-content:space-between; gap:12px; padding:5px 0; border-bottom:1px solid rgba(51,65,85,.45); }}
     .list-row:last-child {{ border-bottom:0; }}
     .pill {{ display:inline-block; margin:4px 4px 0 0; padding:2px 7px; border:1px solid #334155; border-radius:999px; color:#cbd5e1; font-size:11px; }}
-    @media(max-width:900px) {{ .toolbar .hint {{ display:none; }} #legend {{ width:190px; }} }}
+    @media(max-width:900px) {{ .toolbar .hint {{ display:none; }} #legend {{ width:220px; }} }}
     @media(max-width:760px) {{
       #stage {{ height:430px; }} #detail {{ height:335px; overflow-y:auto; }}
       .detail-grid {{ grid-template-columns:1fr; height:auto; }} .summary-card {{ height:auto; }} .detail-scroll {{ height:auto; overflow:visible; }}
-      #info-panel {{ width:250px; }} #legend {{ width:170px; max-height:220px; }}
+      #info-panel {{ width:250px; }} #legend {{ width:190px; }}
     }}
   </style>
 </head>
@@ -259,13 +274,21 @@ def build_sigma_html(
     const isolateButton = document.getElementById("isolate");
     const resetButton = document.getElementById("reset");
 
-    const totalNodes = data.legend.reduce((sum, item) => sum + Number(item.count || 0), 0);
-    legend.innerHTML = `<div class="legend-head"><div><div class="legend-title">Community</div><div class="legend-subtitle">Color = collaboration cluster</div></div><div class="legend-total">${{totalNodes}} nodes</div></div><div class="legend-list">` +
-      data.legend.map(item => `<div class="legend-item"><span class="legend-swatch" style="--legend-color:${{item.color}};background:${{item.color}}"></span><span class="legend-label">${{item.label}}</span><span class="legend-count">${{item.count}}</span></div>`).join("") +
-      `</div>`;
+    const scale = data.collaboration_scale || {{min:0, max:0, low_color:"#475569", high_color:"#fb923c"}};
+    const lowLabel = `${{scale.min}} task`;
+    const highLabel = `${{scale.max}} task`;
+    legend.innerHTML = `<div class="legend-title">Frekuensi kolaborasi</div>` +
+      `<div class="legend-subtitle">Warna & ketebalan garis = jumlah task bersama antar-karyawan</div>` +
+      `<div class="scale-bar" style="background:linear-gradient(90deg,${{scale.low_color}},${{scale.high_color}})"></div>` +
+      `<div class="scale-labels"><span>${{lowLabel}}</span><span>${{highLabel}}</span></div>` +
+      `<div class="scale-hints"><span>Sedikit</span><span>Banyak</span></div>` +
+      `<div class="legend-note">Warna node menunjukkan community/cluster kolaborasi.</div>`;
 
     data.nodes.slice().sort((a,b) => a.label.localeCompare(b.label)).forEach(n => {{
-      const option = document.createElement("option"); option.value = n.id; option.textContent = n.label; search.appendChild(option);
+      const option = document.createElement("option");
+      option.value = n.id;
+      option.textContent = n.label;
+      search.appendChild(option);
     }});
 
     let selectedNode = null;
@@ -324,8 +347,8 @@ def build_sigma_html(
             result.color = "#131c2d";
             result.size = Math.max(0.22, attrs.size * 0.24);
           }} else {{
-            result.color = "#e2e8f0";
-            result.size = Math.max(1.5, Math.min(4.6, attrs.size * 1.75));
+            result.color = attrs.color;
+            result.size = Math.max(1.5, Math.min(5.5, attrs.size * 1.75));
             result.zIndex = 4;
           }}
         }}
@@ -362,7 +385,7 @@ def build_sigma_html(
     function showEdgeInfo(edge) {{
       const a = graph.getEdgeAttributes(edge);
       infoPanel.style.display = "block";
-      infoPanel.innerHTML = `<div class="title">${{a.source}} ↔ ${{a.target}}</div><b>${{a.shared_task_count}}</b> task bersama · <b>${{Number(a.related_hours).toFixed(2)}}</b> jam terkait<br><span class="muted">Task:</span> ${{(a.shared_tasks || []).join(", ") || "-"}}<br><span class="muted">Project:</span> ${{(a.projects || []).join(", ") || "-"}}`;
+      infoPanel.innerHTML = `<div class="title">${{a.source}} ↔ ${{a.target}}</div><b>Frekuensi kolaborasi: ${{a.collaboration_count}} task bersama</b><br><span class="muted">Total jam terkait:</span> ${{Number(a.related_hours).toFixed(2)}} jam<br><span class="muted">Task:</span> ${{(a.shared_tasks || []).join(", ") || "-"}}<br><span class="muted">Project:</span> ${{(a.projects || []).join(", ") || "-"}}`;
     }}
 
     function focusNode(node, navigate=false) {{
