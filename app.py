@@ -19,7 +19,6 @@ navigation = st.navigation(
         st.Page("pages/1_Load_Data.py", title="Load Data", default=True),
         st.Page("pages/2_Neural_Graph.py", title="Neural Graph"),
         st.Page("pages/3_Fragmentation.py", title="Fragmentation Analysis"),
-        st.Page("pages/4_AI_Analyst.py", title="AI Analyst"),
         st.Page("pages/5_Quality_Audit.py", title="Audit Kualitas"),
     ]
 )

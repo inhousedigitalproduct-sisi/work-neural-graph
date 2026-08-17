@@ -6,7 +6,7 @@ import streamlit as st
 
 from src.analytics.service import AnalyticsService
 from src.services import TimesheetDataService
-from src.ui.components import render_analytics_summary, render_shared_filters
+from src.ui.components import render_shared_filters
 from src.utils.config import get_config
 
 config = get_config()
@@ -14,256 +14,331 @@ service = AnalyticsService(config.db_path)
 dataset_service = TimesheetDataService(config.db_path)
 
 
+def continuity_pattern(value: float) -> str:
+    ratio = float(value)
+    if ratio >= 0.75:
+        return "Kontinu"
+    if ratio >= 0.50:
+        return "Cukup kontinu"
+    if ratio >= 0.25:
+        return "Terputus"
+    return "Sangat terputus"
+
+
+def switching_pattern(value: float) -> str:
+    switches = float(value)
+    if switches < 1:
+        return "Fokus"
+    if switches < 3:
+        return "Cukup tersebar"
+    return "Sangat tersebar"
+
+
 def build_task_timeline(dataframe: pd.DataFrame, task_key: str) -> go.Figure:
     task_data = dataframe[dataframe["task_key"] == task_key].copy()
     task_data["work_date"] = pd.to_datetime(task_data["work_date"])
-    timeline = (
-        task_data.groupby("work_date", as_index=False)
-        .agg(hours=("hours", "sum"))
-        .sort_values("work_date")
-    )
+    timeline = task_data.groupby("work_date", as_index=False).agg(hours=("hours", "sum")).sort_values("work_date")
     figure = go.Figure(
-        data=[
-            go.Bar(
-                x=timeline["work_date"].tolist(),
-                y=timeline["hours"].tolist(),
-                marker_color="#FFFFFF",
-                hovertemplate="Tanggal: %{x|%d %b %Y}<br>Jam: %{y:.2f}<extra></extra>",
-            )
-        ]
+        data=[go.Bar(
+            x=timeline["work_date"].tolist(),
+            y=timeline["hours"].tolist(),
+            hovertemplate="Tanggal: %{x|%d %b %Y}<br>Jam: %{y:.2f}<extra></extra>",
+        )]
     )
     figure.update_layout(
         height=320,
         margin={"l": 20, "r": 20, "t": 20, "b": 20},
         xaxis_title="Tanggal kerja",
         yaxis_title="Jam",
-        paper_bgcolor="#000000",
-        plot_bgcolor="#000000",
-        font={"color": "#FFFFFF"},
-        hoverlabel={"bgcolor": "#111111", "font": {"color": "#FFFFFF"}, "bordercolor": "#444444"},
-        xaxis={
-            "title": {"font": {"color": "#FFFFFF"}},
-            "tickfont": {"color": "#FFFFFF"},
-            "gridcolor": "rgba(255,255,255,0.12)",
-            "linecolor": "rgba(255,255,255,0.35)",
-        },
-        yaxis={
-            "title": {"font": {"color": "#FFFFFF"}},
-            "tickfont": {"color": "#FFFFFF"},
-            "gridcolor": "rgba(255,255,255,0.18)",
-            "linecolor": "rgba(255,255,255,0.35)",
-        },
+        hovermode="closest",
+    )
+    return figure
+
+
+def build_context_switch_bar(summary: pd.DataFrame) -> go.Figure:
+    view = summary.sort_values("average_context_switches_per_active_day", ascending=True)
+    figure = go.Figure(go.Bar(
+        x=view["average_context_switches_per_active_day"],
+        y=view["employee"],
+        orientation="h",
+        customdata=view[["active_days", "max_context_switches_single_day"]],
+        hovertemplate=(
+            "<b>%{y}</b><br>Rata-rata pindah task/hari: %{x:.2f}<br>"
+            "Hari aktif: %{customdata[0]}<br>Maksimum dalam sehari: %{customdata[1]}<extra></extra>"
+        ),
+    ))
+    figure.update_layout(
+        height=max(360, 34 * len(view)),
+        margin={"l": 20, "r": 20, "t": 20, "b": 20},
+        xaxis_title="Rata-rata perpindahan task per hari aktif",
+        yaxis_title="",
+    )
+    return figure
+
+
+def build_context_switch_daily(daily: pd.DataFrame, employee: str) -> go.Figure:
+    view = daily[daily["employee"] == employee].copy().sort_values("work_date")
+    figure = go.Figure(go.Scatter(
+        x=view["work_date"],
+        y=view["context_switches"],
+        mode="lines+markers",
+        customdata=view[["unique_tasks", "unique_projects", "total_hours"]],
+        hovertemplate=(
+            "Tanggal: %{x|%d %b %Y}<br>Perpindahan task: %{y}<br>"
+            "Task unik: %{customdata[0]}<br>Project unik: %{customdata[1]}<br>"
+            "Total jam: %{customdata[2]:.2f}<extra></extra>"
+        ),
+    ))
+    figure.update_layout(
+        height=320,
+        margin={"l": 20, "r": 20, "t": 20, "b": 20},
+        xaxis_title="Tanggal",
+        yaxis_title="Perpindahan task",
+    )
+    return figure
+
+
+def build_continuity_scatter(continuity: pd.DataFrame) -> go.Figure:
+    view = continuity.copy()
+    view["continuity_percent"] = view["continuous_work_ratio"].astype(float) * 100
+    figure = go.Figure(go.Scatter(
+        x=view["calendar_span_days"],
+        y=view["continuity_percent"],
+        mode="markers",
+        text=view["task"],
+        customdata=view[["project", "active_days", "max_date_gap_days"]],
+        hovertemplate=(
+            "<b>%{text}</b><br>Project: %{customdata[0]}<br>Rentang: %{x} hari<br>"
+            "Hari dikerjakan: %{customdata[1]}<br>Jeda terpanjang: %{customdata[2]} hari<br>"
+            "Kontinuitas: %{y:.0f}%<extra></extra>"
+        ),
+    ))
+    figure.update_layout(
+        height=430,
+        margin={"l": 20, "r": 20, "t": 20, "b": 20},
+        xaxis_title="Rentang pengerjaan (hari)",
+        yaxis_title="Tingkat kontinuitas (%)",
+        yaxis={"range": [0, 105]},
+    )
+    return figure
+
+
+def build_continuity_ranking(continuity: pd.DataFrame) -> go.Figure:
+    view = continuity.copy()
+    view["continuity_percent"] = view["continuous_work_ratio"].astype(float) * 100
+    view = view.sort_values("continuity_percent", ascending=True).tail(25)
+    figure = go.Figure(go.Bar(
+        x=view["continuity_percent"],
+        y=view["task"],
+        orientation="h",
+        customdata=view[["calendar_span_days", "max_date_gap_days"]],
+        hovertemplate=(
+            "<b>%{y}</b><br>Kontinuitas: %{x:.0f}%<br>Rentang: %{customdata[0]} hari<br>"
+            "Jeda terpanjang: %{customdata[1]} hari<extra></extra>"
+        ),
+    ))
+    figure.update_layout(
+        height=max(360, 32 * len(view)),
+        margin={"l": 20, "r": 20, "t": 20, "b": 20},
+        xaxis_title="Tingkat kontinuitas (%)",
+        yaxis_title="",
+        xaxis={"range": [0, 105]},
     )
     return figure
 
 
 st.title("Fragmentation Analysis")
-st.caption("Mendeteksi task yang pengerjaannya terputus, lalu memberi prioritas tindak lanjut berdasarkan filter aktif.")
+st.caption("Membaca pola jeda, perpindahan task, dan kontinuitas kerja dengan visual yang lebih mudah dipahami.")
 
 source_dataframe = dataset_service.load_active_dataset()
 if source_dataframe.empty:
-    st.info("No timesheet data is available. Load data from the Load Data page.")
+    st.info("Belum ada data timesheet. Muat data dari halaman Load Data.")
     st.stop()
 
 filters, _ = render_shared_filters(source_dataframe)
 snapshot = service.build_snapshot(filters=filters)
-
 if snapshot.filtered_dataframe.empty:
-    st.info("The selected filters returned no rows.")
+    st.info("Filter saat ini tidak menghasilkan data.")
     st.stop()
 
-render_analytics_summary(
-    total_hours=snapshot.kpi.total_hours,
-    active_days=snapshot.kpi.active_days,
-    unique_tasks=snapshot.kpi.unique_tasks,
-    unique_employees=snapshot.kpi.unique_employees,
-    unique_projects=snapshot.kpi.unique_projects,
-    fragmented_tasks=snapshot.kpi.fragmented_tasks,
-    interrupted_tasks=snapshot.kpi.interrupted_tasks,
-    average_context_switches=snapshot.kpi.average_context_switches,
-    average_continuity_ratio=snapshot.kpi.average_continuity_ratio,
+fragmentation = snapshot.fragmentation.copy()
+fragmented = fragmentation[fragmentation["interruption_count"] > 0].copy()
+continuity = snapshot.continuity.copy()
+
+scope_text = (
+    f"Scope aktif: {len(snapshot.filtered_dataframe):,} entri • "
+    f"{snapshot.kpi.unique_tasks} task • {snapshot.kpi.unique_employees} karyawan • "
+    f"{snapshot.kpi.unique_projects} project"
 )
+st.caption(scope_text)
 
-with st.expander("Bagaimana pola pengerjaan task yang ideal?", expanded=True):
+median_continuity = float(continuity["continuous_work_ratio"].median()) * 100 if not continuity.empty else 0.0
+longest_gap = int(fragmentation["max_date_gap_days"].max()) if not fragmentation.empty else 0
+fragmented_pct = (len(fragmented) / len(fragmentation) * 100) if len(fragmentation) else 0.0
+
+k1, k2, k3, k4, k5 = st.columns(5)
+k1.metric("Task dianalisis", len(fragmentation))
+k2.metric("Task dengan jeda", len(fragmented))
+k3.metric("Task dengan jeda", f"{fragmented_pct:.0f}%", help="Persentase task yang memiliki jeda antarhari pengerjaan.")
+k4.metric("Median kontinuitas", f"{median_continuity:.0f}%", help="Nilai tengah tingkat kontinuitas seluruh task pada scope aktif.")
+k5.metric("Jeda terpanjang", f"{longest_gap} hari")
+
+st.subheader("Ringkasan pola")
+if fragmented.empty:
+    st.success("Tidak ada task yang memiliki jeda antarhari pengerjaan pada filter aktif.")
+else:
+    low_continuity = int((continuity["continuous_work_ratio"] < 0.50).sum()) if not continuity.empty else 0
+    st.info(
+        f"{len(fragmented)} dari {len(fragmentation)} task memiliki jeda pengerjaan. "
+        f"{low_continuity} task memiliki tingkat kontinuitas di bawah 50%. "
+        "Gunakan tabel dan visual di bawah untuk melihat task yang paling renggang polanya."
+    )
+
+with st.expander("Cara membaca analisis ini", expanded=False):
     st.markdown(
         """
-**Pola ideal bukan berarti semua task harus selesai tanpa jeda.** Yang dicari adalah pola yang mudah ditelusuri dan alasan jedanya dapat dijelaskan.
-
-- Task yang sama idealnya dikerjakan dalam **blok hari yang berdekatan** ketika memang sedang menjadi prioritas.
-- Jika task harus berhenti, Note sebaiknya menjelaskan **blocker, dependency, keputusan yang ditunggu, atau next step**.
-- Task yang berlangsung lama sebaiknya dipecah menjadi **subtask atau milestone** agar progres tidak terlihat sebagai satu pekerjaan yang sporadis.
-- Pekerjaan support, rutin, atau menunggu pihak lain memang dapat memiliki fragmentasi tinggi. Karena itu skor adalah **sinyal untuk diskusi**, bukan penilaian kualitas kerja.
-
-**Contoh sederhana:** Task A dikerjakan 1–3 Agustus lalu selesai. Polanya relatif kontinu. Task B muncul 1, 8, 17, dan 29 Agustus tanpa konteks jeda. Task B lebih layak ditelusuri: apakah karena dependency, perubahan prioritas, karakter support, atau task terlalu besar.
+- **Hari Dikerjakan** = jumlah hari aktual task muncul di timesheet.
+- **Rentang Pengerjaan** = jarak dari tanggal pertama sampai tanggal terakhir task.
+- **Jeda Terpanjang** = jarak tanggal terpanjang antara dua kemunculan task berturut-turut.
+- **Tingkat Kontinuitas** = Hari Dikerjakan / Rentang Pengerjaan. Semakin tinggi, semakin rapat pola pengerjaannya.
+- Label pola adalah interpretasi keteraturan waktu, **bukan penilaian performa individu**.
 """
     )
-
-with st.expander("Cara membaca metrik fragmentasi", expanded=False):
-    st.markdown(
-        """
-- **Fragmentation Score = Continuations + Interruption Days.** Makin tinggi, makin panjang/renggang pola pengerjaan task.
-- **Interruption Days** adalah total hari kosong di antara dua tanggal pengerjaan task yang sama.
-- **Continuity Ratio** adalah hari aktif dibagi rentang kalender task. Makin mendekati 100%, makin rapat pola pengerjaannya.
-- **Max Gap** adalah jarak tanggal terpanjang antara dua kemunculan task berturut-turut.
-- **Interruptions** menghitung berapa kali terdapat gap lebih dari satu hari.
-
-Gunakan metrik secara bersama-sama. Skor tinggi pada pekerjaan support rutin dapat memiliki makna berbeda dari skor tinggi pada satu deliverable proyek yang seharusnya memiliki milestone jelas.
-"""
-    )
-
-fragmented = snapshot.fragmentation[snapshot.fragmentation["interruption_count"] > 0]
-top_fragmented = snapshot.fragmentation.head(3)
-lowest_continuity = fragmented.sort_values("continuous_work_ratio").head(3)
-max_gap = snapshot.fragmentation.sort_values("max_date_gap_days", ascending=False).head(1)
-
-st.subheader("Ringkasan analisis")
-filter_scope = f"{len(snapshot.filtered_dataframe)} entri, {snapshot.kpi.unique_tasks} task, dan {snapshot.kpi.active_days} hari aktif"
-if fragmented.empty:
-    st.success(f"Pada cakupan filter saat ini ({filter_scope}), tidak ada task yang memiliki jeda antarhari pengerjaan.")
-else:
-    st.warning(
-        f"Pada cakupan filter saat ini ({filter_scope}), terdapat **{len(fragmented)} task** yang memiliki jeda pengerjaan. "
-        "Gunakan daftar ini sebagai prioritas validasi konteks, bukan sebagai penilaian performa."
-    )
-    summary_left, summary_right = st.columns(2)
-    with summary_left:
-        st.markdown("**Task dengan sinyal fragmentasi tertinggi**")
-        st.dataframe(
-            top_fragmented[["task", "fragmentation_score", "total_interruption_days", "total_hours"]]
-            .rename(columns={"task": "Task", "fragmentation_score": "Skor", "total_interruption_days": "Hari jeda", "total_hours": "Jam"}),
-            hide_index=True,
-            use_container_width=True,
-        )
-    with summary_right:
-        gap_row = max_gap.iloc[0]
-        st.markdown("**Temuan utama**")
-        st.write(f"Jeda terpanjang adalah **{int(gap_row['max_date_gap_days'])} hari** pada task **{gap_row['task']}**.")
-        if not lowest_continuity.empty:
-            st.write(
-                f"Kontinuitas terendah pada task yang terputus adalah **{lowest_continuity.iloc[0]['task']}** "
-                f"({lowest_continuity.iloc[0]['continuous_work_ratio']:.0%})."
-            )
-
-st.subheader("Rekomendasi tindak lanjut")
-if fragmented.empty:
-    st.write(
-        "Secara umum tidak ada sinyal jeda dominan pada filter aktif. Pertahankan konsistensi penamaan task dan dokumentasikan "
-        "blocker/next step agar pola tetap mudah ditelusuri ketika cakupan pekerjaan bertambah."
-    )
-else:
-    leading = top_fragmented.iloc[0]
-    st.markdown("**Arah tindak lanjut manajerial**")
-    st.write(
-        f"Prioritaskan validasi pada kelompok task dengan fragmentasi tinggi, dimulai dari **{leading['task']}**. "
-        "Tujuannya bukan mencari kesalahan, tetapi memastikan apakah pola jeda berasal dari dependency yang wajar, perubahan prioritas, "
-        "karakter pekerjaan support, atau struktur task yang terlalu besar."
-    )
-    st.markdown("**Poin yang perlu didiskusikan manajemen**")
-    management_points = [
-        "Apakah task dengan jeda panjang memang menunggu dependency/approval eksternal, atau prioritasnya sering berubah?",
-        "Apakah pekerjaan support/rutin sudah dipisahkan dari deliverable proyek sehingga pola keduanya tidak tercampur?",
-        "Apakah task yang berlangsung lama perlu dipecah menjadi milestone/subtask dengan outcome dan next step yang lebih jelas?",
-    ]
-    for item in management_points:
-        st.write(f"- {item}")
 
 st.subheader("Fragmentation Table")
-with st.expander("Help — cara membaca Fragmentation Table", expanded=False):
-    st.markdown(
-        """
-Baca tabel dari kiri ke kanan untuk memahami **cakupan → rentang waktu → pola jeda → skor**:
-
-- **Task / Project / Employees**: konteks pekerjaan yang dianalisis.
-- **Total Hours**: total jam tercatat untuk task pada filter aktif.
-- **Active Days**: jumlah tanggal task benar-benar dikerjakan.
-- **Calendar Span**: rentang hari dari kemunculan pertama sampai terakhir, termasuk hari tanpa aktivitas.
-- **Continuations**: jumlah perpindahan dari satu hari aktif ke hari aktif berikutnya (`Active Days - 1`).
-- **Interruptions**: berapa kali terdapat gap lebih dari satu hari.
-- **Max Gap**: gap tanggal terpanjang antar kemunculan task.
-- **Interruption Days**: total hari kosong yang berada di antara hari-hari aktif.
-- **Continuity Ratio**: `Active Days / Calendar Span`; makin tinggi berarti pola makin rapat.
-- **Fragmentation Score**: `Continuations + Interruption Days`; gunakan untuk memprioritaskan review, bukan untuk menilai individu.
-
-**Contoh:** sebuah task aktif 4 hari dalam rentang 5 hari biasanya lebih kontinu daripada task aktif 4 hari dalam rentang 30 hari, meskipun jumlah hari aktifnya sama.
-"""
-    )
-
-fragmentation_table = snapshot.fragmentation[
-    [
-        "task",
-        "project",
-        "employees",
-        "total_hours",
-        "active_days",
-        "calendar_span_days",
-        "continuation_count",
-        "interruption_count",
-        "max_date_gap_days",
-        "total_interruption_days",
-        "continuous_work_ratio",
-        "fragmentation_score",
-    ]
-].copy()
+fragmentation_table = fragmentation[[
+    "task", "project", "employees", "active_days", "calendar_span_days",
+    "max_date_gap_days", "continuous_work_ratio",
+]].copy()
+fragmentation_table["employees"] = fragmentation_table["employees"].map(lambda values: ", ".join(values))
+fragmentation_table["continuous_work_ratio"] = fragmentation_table["continuous_work_ratio"].astype(float) * 100
+fragmentation_table["Pola"] = fragmentation_table["continuous_work_ratio"].map(lambda value: continuity_pattern(value / 100))
 fragmentation_table.columns = [
-    "Task",
-    "Project",
-    "Employees",
-    "Total Hours",
-    "Active Days",
-    "Calendar Span",
-    "Continuations",
-    "Interruptions",
-    "Max Gap",
-    "Interruption Days",
-    "Continuity Ratio",
-    "Fragmentation Score",
+    "Task", "Project", "Karyawan", "Hari Dikerjakan", "Rentang Pengerjaan (hari)",
+    "Jeda Terpanjang (hari)", "Tingkat Kontinuitas (%)", "Pola",
 ]
-st.dataframe(fragmentation_table, use_container_width=True, hide_index=True)
+st.dataframe(
+    fragmentation_table,
+    use_container_width=True,
+    hide_index=True,
+    column_config={"Tingkat Kontinuitas (%)": st.column_config.NumberColumn(format="%.0f%%")},
+)
 
-task_options = snapshot.fragmentation["task_key"].tolist()
+if fragmentation.empty:
+    st.stop()
+
+task_options = fragmentation["task_key"].tolist()
 selected_task_key = st.selectbox(
-    "Selected Task Detail",
+    "Pilih task untuk melihat detail",
     task_options,
     key="fragmentation_selected_task_key",
-    format_func=lambda value: snapshot.fragmentation.loc[
-        snapshot.fragmentation["task_key"] == value, "task"
-    ].iloc[0],
+    format_func=lambda value: fragmentation.loc[fragmentation["task_key"] == value, "task"].iloc[0],
 )
+selected_task = fragmentation[fragmentation["task_key"] == selected_task_key].iloc[0]
+selected_continuity = float(selected_task["continuous_work_ratio"])
+selected_pattern = continuity_pattern(selected_continuity)
 
-selected_task = snapshot.fragmentation[snapshot.fragmentation["task_key"] == selected_task_key].iloc[0]
-detail_col1, detail_col2 = st.columns(2)
-detail_col1.write(
-    {
-        "Task": selected_task["task"],
-        "Project": selected_task["project"],
-        "Employees": ", ".join(selected_task["employees"]),
-        "Fragmentation Score": int(selected_task["fragmentation_score"]),
-        "Band": selected_task["fragmentation_band"],
-    }
+st.subheader(str(selected_task["task"]))
+st.markdown(
+    f"**{selected_pattern}.** Task dikerjakan pada **{int(selected_task['active_days'])} hari** "
+    f"dalam rentang **{int(selected_task['calendar_span_days'])} hari**. "
+    f"Jeda terpanjang **{int(selected_task['max_date_gap_days'])} hari**, "
+    f"dengan tingkat kontinuitas **{selected_continuity * 100:.0f}%**."
 )
-detail_col2.write(
-    {
-        "First Work Date": selected_task["first_work_date"],
-        "Last Work Date": selected_task["last_work_date"],
-        "Active Days": int(selected_task["active_days"]),
-        "Interruption Days": int(selected_task["total_interruption_days"]),
-        "Continuity Ratio": round(float(selected_task["continuous_work_ratio"]), 4),
-    }
+st.caption(
+    f"Project: {selected_task['project']} • Karyawan: {', '.join(selected_task['employees'])} • "
+    f"Total jam: {float(selected_task['total_hours']):.2f}"
 )
 
 st.subheader("Task Timeline")
-st.caption("Batang menunjukkan jam yang tercatat pada setiap tanggal task dikerjakan. Ruang kosong antarbatang membantu melihat jeda pengerjaan.")
+st.caption("Batang menunjukkan jam pada setiap tanggal task dikerjakan. Ruang kosong antarbatang menunjukkan jeda.")
 st.plotly_chart(build_task_timeline(snapshot.filtered_dataframe, selected_task_key), use_container_width=True)
 
-with st.expander("Context Switching (detail teknis)", expanded=False):
-    st.caption("Detail teknis ini menunjukkan perpindahan task dalam satu hari. Gunakan hanya bila diperlukan untuk investigasi lanjutan.")
-    context_daily = snapshot.context_switch_daily.copy()
-    if not context_daily.empty:
-        context_daily["work_date"] = pd.to_datetime(context_daily["work_date"]).dt.date.astype(str)
-    st.dataframe(context_daily, use_container_width=True)
+with st.expander("Detail perhitungan task", expanded=False):
+    detail = pd.DataFrame([{
+        "Continuations": int(selected_task["continuation_count"]),
+        "Interruptions": int(selected_task["interruption_count"]),
+        "Average Gap (hari)": round(float(selected_task["average_date_gap_days"]), 2),
+        "Interruption Days": int(selected_task["total_interruption_days"]),
+        "Fragmentation Score": int(selected_task["fragmentation_score"]),
+        "Band": selected_task["fragmentation_band"],
+        "Tanggal pertama": selected_task["first_work_date"],
+        "Tanggal terakhir": selected_task["last_work_date"],
+    }])
+    st.dataframe(detail, use_container_width=True, hide_index=True)
 
-with st.expander("Concurrency (detail teknis)", expanded=False):
-    overall = snapshot.concurrency["date_overall"].copy()
-    if not overall.empty:
-        overall["work_date"] = pd.to_datetime(overall["work_date"]).dt.date.astype(str)
-    st.dataframe(overall, use_container_width=True)
+st.divider()
+st.subheader("Context Switching")
+st.caption("Menunjukkan seberapa sering karyawan berpindah task dalam satu hari aktif. Nilai ini menggambarkan pola fokus, bukan produktivitas.")
+
+context_summary = snapshot.context_switch_summary.copy()
+context_daily = snapshot.context_switch_daily.copy()
+if context_summary.empty:
+    st.info("Belum ada data Context Switching pada scope aktif.")
+else:
+    st.plotly_chart(build_context_switch_bar(context_summary), use_container_width=True)
+    human_context = context_summary.copy()
+    human_context["Pola"] = human_context["average_context_switches_per_active_day"].map(switching_pattern)
+    human_context = human_context.rename(columns={
+        "employee": "Karyawan",
+        "active_days": "Hari Aktif",
+        "average_context_switches_per_active_day": "Rata-rata Pindah Task/Hari",
+        "max_context_switches_single_day": "Pindah Task Tertinggi",
+    })
+    st.dataframe(
+        human_context[["Karyawan", "Hari Aktif", "Rata-rata Pindah Task/Hari", "Pindah Task Tertinggi", "Pola"]],
+        use_container_width=True,
+        hide_index=True,
+        column_config={"Rata-rata Pindah Task/Hari": st.column_config.NumberColumn(format="%.2f")},
+    )
+
+    employee = st.selectbox(
+        "Lihat perpindahan task per hari",
+        context_summary["employee"].tolist(),
+        key="fragmentation_context_employee",
+    )
+    employee_row = context_summary[context_summary["employee"] == employee].iloc[0]
+    avg_switch = float(employee_row["average_context_switches_per_active_day"])
+    st.caption(
+        f"{employee} memiliki pola **{switching_pattern(avg_switch).lower()}**: rata-rata "
+        f"{avg_switch:.2f} perpindahan task per hari aktif, dengan maksimum "
+        f"{int(employee_row['max_context_switches_single_day'])} dalam satu hari."
+    )
+    st.plotly_chart(build_context_switch_daily(context_daily, employee), use_container_width=True)
+
+    with st.expander("Lihat detail perhitungan Context Switching", expanded=False):
+        st.dataframe(context_daily, use_container_width=True, hide_index=True)
+
+st.divider()
+st.subheader("Continuity")
+st.caption("Menunjukkan seberapa rapat sebuah task dikerjakan sepanjang rentang waktunya. Titik kanan-bawah berarti rentang panjang dengan kontinuitas rendah.")
+
+if continuity.empty:
+    st.info("Belum ada data Continuity pada scope aktif.")
+else:
+    st.plotly_chart(build_continuity_scatter(continuity), use_container_width=True)
+    st.caption("Ranking di bawah membantu membandingkan tingkat kontinuitas antar-task. Maksimal 25 task ditampilkan agar tetap terbaca.")
+    st.plotly_chart(build_continuity_ranking(continuity), use_container_width=True)
+
+    human_continuity = continuity.copy()
+    human_continuity["Tingkat Kontinuitas (%)"] = human_continuity["continuous_work_ratio"].astype(float) * 100
+    human_continuity["Pola"] = human_continuity["continuous_work_ratio"].map(continuity_pattern)
+    human_continuity = human_continuity.rename(columns={
+        "task": "Task",
+        "project": "Project",
+        "active_days": "Hari Dikerjakan",
+        "calendar_span_days": "Rentang Pengerjaan (hari)",
+        "max_date_gap_days": "Jeda Terpanjang (hari)",
+    })
+    st.dataframe(
+        human_continuity[[
+            "Task", "Project", "Hari Dikerjakan", "Rentang Pengerjaan (hari)",
+            "Jeda Terpanjang (hari)", "Tingkat Kontinuitas (%)", "Pola",
+        ]],
+        use_container_width=True,
+        hide_index=True,
+        column_config={"Tingkat Kontinuitas (%)": st.column_config.NumberColumn(format="%.0f%%")},
+    )
+
+    with st.expander("Lihat detail perhitungan Continuity", expanded=False):
+        st.dataframe(snapshot.continuity, use_container_width=True, hide_index=True)
