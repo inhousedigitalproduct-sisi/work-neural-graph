@@ -1,0 +1,104 @@
+version: 1
+
+production:
+  include:
+    - app.py
+    - pages/*.py
+    - src/*.py
+    - src/**/*.py
+    - config/*
+  exclude: []
+
+modules:
+  load-data:
+    doc: docs/architecture/modules/load-data.md
+    code:
+      - pages/1_Load_Data.py
+      - src/quality/readiness.py
+    tests:
+      - tests/test_loader.py
+      - tests/test_normalizer.py
+      - tests/test_excel_template_integration.py
+      - tests/test_dataset_service.py
+      - tests/test_readiness.py
+
+  neural-graph:
+    doc: docs/architecture/modules/neural-graph.md
+    code:
+      - pages/2_Neural_Graph.py
+      - src/graph/builder.py
+      - src/graph/collaboration.py
+      - src/graph/collaboration_visualizer.py
+      - src/graph/sigma_renderer.py
+      - src/graph/visualizer.py
+    tests:
+      - tests/test_collaboration_graph.py
+      - tests/test_graph_builder.py
+      - tests/test_graph_visualizer.py
+
+  fragmentation:
+    doc: docs/architecture/modules/fragmentation.md
+    code:
+      - pages/3_Fragmentation.py
+      - src/analytics/*.py
+    tests:
+      - tests/test_analytics.py
+      - tests/test_graph_builder.py
+
+  quality-audit:
+    doc: docs/architecture/modules/quality-audit.md
+    code:
+      - pages/5_Quality_Audit.py
+      - src/quality/*.py
+    tests:
+      - tests/test_quality.py
+      - tests/test_readiness.py
+
+  analytics:
+    doc: docs/architecture/modules/analytics.md
+    code:
+      - src/analytics/*.py
+      - src/graph/builder.py
+    tests:
+      - tests/test_analytics.py
+      - tests/test_graph_builder.py
+
+  ingestion:
+    doc: docs/architecture/modules/ingestion.md
+    code:
+      - src/ingestion/*.py
+    tests:
+      - tests/test_loader.py
+      - tests/test_normalizer.py
+      - tests/test_excel_template_integration.py
+
+  persistence-services:
+    doc: docs/architecture/modules/persistence-services.md
+    code:
+      - src/database/*.py
+      - src/domain/*.py
+      - src/services.py
+    tests:
+      - tests/test_dataset_service.py
+      - tests/test_graph_builder.py
+      - tests/test_analytics.py
+
+  llm-semantic:
+    doc: docs/architecture/modules/llm-semantic.md
+    code:
+      - src/llm/*.py
+      - config/llm.conf
+      - src/utils/config.py
+    tests:
+      - tests/test_llm.py
+      - tests/test_llm_config.py
+      - tests/test_openai_errors.py
+
+  shared-ui-config:
+    doc: docs/architecture/modules/shared-ui-config.md
+    code:
+      - app.py
+      - src/ui/*.py
+      - src/utils/config.py
+    tests:
+      - tests/test_llm_config.py
