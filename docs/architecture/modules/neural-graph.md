@@ -5,7 +5,7 @@
 Neural Graph memvisualisasikan dua jenis evidence kolaborasi yang sengaja dipisahkan:
 
 1. **Shared-task evidence** — edge undirected berarti dua karyawan berbagi `task_key` pada scope project/date aktif. `shared_task_count` tetap menjadi metric frekuensi kolaborasi utama untuk warna dan ketebalan garis.
-2. **Directional acknowledgement evidence** — dot satu arah berarti pemilik timesheet menyebut karyawan lain pada kolom `note` dengan deterministic employee-name matching.
+2. **Directional acknowledgement evidence** — marker chevron satu arah berarti pemilik timesheet menyebut karyawan lain pada kolom `note` dengan deterministic employee-name matching.
 
 Acknowledgement adalah evidence pola dokumentasi/koordinasi, bukan penilaian performa individu.
 
@@ -28,7 +28,7 @@ shared edges + directional evidence
  -> acknowledgement insight classification / reciprocity
  -> threshold minimum shared tasks
  -> Sigma payload/layout/community
- -> one-way directional dot overlay on visible shared-task edges
+ -> one-way directional chevron overlay on visible shared-task edges
 ```
 
 ## Entry Points and Dependencies
@@ -89,12 +89,15 @@ Nilai ini mengukur balance acknowledgement pada timesheet, bukan collaboration q
 
 ## Animation Contract
 
-- Dot hanya berasal dari **directional acknowledgement evidence**, bukan dari urutan alfabet edge atau asumsi bahwa shared-task selalu reciprocal.
-- Dot bergerak satu arah dari source ke target, lalu restart dari source. Tidak memantul kembali.
+- Marker hanya berasal dari **directional acknowledgement evidence**, bukan dari urutan alfabet edge atau asumsi bahwa shared-task selalu reciprocal.
+- Marker berbentuk **chevron/arrowhead** sehingga arah dapat dibaca dari satu frame tanpa harus menunggu gerak dot.
+- Marker bergerak satu arah dari source ke target, lalu restart dari source. Tidak memantul kembali.
+- Orientasi marker dihitung dari vektor source-target (`atan2`) dan selalu menunjuk ke target.
 - Jika A -> B dan B -> A sama-sama punya evidence, dua signal terpisah dapat bergerak berlawanan pada edge yang sama.
-- Shared-task edge tanpa directional evidence tetap tampil tetapi tanpa dot.
+- Shared-task edge tanpa directional evidence tetap tampil tetapi tanpa marker.
 - `MENTION_ONLY` tetap tersedia pada analysis table tetapi belum dirender sebagai edge, agar semantic garis tetap konsisten sebagai shared task.
-- Dot default radius sekitar **3.7-4.2 px** dengan white core dan outline tipis mengikuti warna edge; focus/hover sekitar **5 px**.
+- Saat tidak ada focus, marker memakai warna edge dengan opacity tinggi dan outline putih tipis agar terbaca di background gelap.
+- Saat hover/klik node, marker pada relasi node aktif diperbesar dan diperjelas; marker lain diredupkan agar active path lebih mudah dibaca tanpa menambah glow berat.
 - Tidak memakai streak, gradient, large shadow blur, atau additive glow yang mahal.
 - Maksimum **120 directional signals** dianimasikan, diprioritaskan berdasarkan jumlah timesheet evidence.
 - Frame interval adaptif berdasarkan jumlah signal yang dianimasikan.
@@ -122,24 +125,26 @@ Config baseline boleh kosong (`{}`). Unique canonical single-token matching tida
 - `src/graph/visualizer.py` dan `collaboration_visualizer.py` masih hidup bersama Sigma renderer; perlu usage audit agar renderer legacy tidak kembali dipakai tanpa sengaja.
 - Page menggunakan `AnalyticsService` yang saat ini membangun legacy `GraphService/GraphBuilder` untuk analytics snapshot, walaupun visual graph sudah collaboration-based.
 - Sigma HTML adalah large Python f-string berisi CSS/JS, sehingga raw string escaping dan regression risk tinggi.
+- Nama helper/file `pinball_animation.py` adalah legacy naming; semantic visual sekarang directional chevron, sehingga rename dapat dilakukan nanti sebagai refactor terpisah agar perubahan visual ini tetap kecil dan mudah direview.
 - CDN availability adalah runtime dependency untuk interactive renderer.
 - Note quality dan naming convention menentukan recall extraction. Unique-token matching meningkatkan recall, tetapi ambiguity gate tetap wajib untuk menahan false-positive.
 
 ## Refactor Recommendations
 
 1. Pertahankan extraction dan animation concern pada helper khusus, bukan di Streamlit page.
-2. Pisahkan Sigma payload construction dari HTML template agar dapat unit-test secara langsung.
-3. Decouple period KPI dari legacy date graph builder.
-4. Hapus/deprecate renderer yang tidak digunakan setelah repository-wide usage search.
-5. Tambahkan browser-level performance smoke test jika tooling frontend tersedia.
-6. Jika directional extraction sudah stabil, evaluasi enrichment jenis interaksi (review/support/handover/coordination) sebagai layer terpisah.
+2. Rename `pinball_animation.py` ke nama yang merepresentasikan directional marker setelah import/reference migration dapat dilakukan atomik.
+3. Pisahkan Sigma payload construction dari HTML template agar dapat unit-test secara langsung.
+4. Decouple period KPI dari legacy date graph builder.
+5. Hapus/deprecate renderer yang tidak digunakan setelah repository-wide usage search.
+6. Tambahkan browser-level performance smoke test jika tooling frontend tersedia.
+7. Jika directional extraction sudah stabil, evaluasi enrichment jenis interaksi (review/support/handover/coordination) sebagai layer terpisah.
 
 ## Tests
 
 Coverage utama: `tests/test_collaboration_graph.py`, `test_graph_builder.py`, `test_graph_visualizer.py`, `test_collaboration_mentions.py`, dan `test_pinball_animation.py`.
 
 - `test_collaboration_mentions.py` menguji one-way extraction, dedupe per entry, unique single-token matching, ambiguous-token rejection, manual nickname alias, extraction diagnostics, mutual/one-sided/silent/mention-only classification, reciprocity, dan filtering signal ke visible shared edge.
-- `test_pinball_animation.py` memastikan animation menerima explicit directional signals, bergerak one-way (bukan bounce), bounded, visible, tanpa heavy gradient/shadow effect, reduced-motion handling, dan invalid viewport coordinate guard.
+- `test_pinball_animation.py` memastikan animation menerima explicit directional signals, bergerak one-way, memakai chevron yang dirotasi ke target, tidak lagi menggambar circle marker, meredupkan marker non-focus, tetap bounded, tanpa heavy gradient/shadow effect, menghormati reduced-motion, dan memiliki invalid viewport coordinate guard.
 
 ## Change Contract
 

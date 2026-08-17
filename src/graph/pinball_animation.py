@@ -92,6 +92,24 @@ PINBALL_SCRIPT = r"""
 
     const frameInterval = pinballEdges.length > 90 ? 66 : pinballEdges.length > 45 ? 50 : 40;
 
+    function drawDirectionalChevron(context, x, y, angle, size, color, alpha, active) {
+      context.save();
+      context.translate(x, y);
+      context.rotate(angle);
+      context.beginPath();
+      context.moveTo(size, 0);
+      context.lineTo(-size * 0.68, -size * 0.58);
+      context.lineTo(-size * 0.34, 0);
+      context.lineTo(-size * 0.68, size * 0.58);
+      context.closePath();
+      context.fillStyle = rgbaFromHex(color, alpha);
+      context.fill();
+      context.strokeStyle = active ? "rgba(255,255,255,0.96)" : `rgba(255,255,255,${Math.min(0.72, alpha)})`;
+      context.lineWidth = active ? 1.35 : 0.9;
+      context.stroke();
+      context.restore();
+    }
+
     function drawPinball(now) {
       if (!pinballContext || !pinballLayer || !pinballStage) return;
       window.requestAnimationFrame(drawPinball);
@@ -116,7 +134,7 @@ PINBALL_SCRIPT = r"""
           return point;
         } catch (error) {
           if (!pinballRuntimeWarned) {
-            console.warn("Directional dot animation skipped an invalid Sigma viewport coordinate.", error);
+            console.warn("Directional marker animation skipped an invalid Sigma viewport coordinate.", error);
             pinballRuntimeWarned = true;
           }
           return null;
@@ -133,20 +151,15 @@ PINBALL_SCRIPT = r"""
         const cycle = (now * speed + edge.phase) % 1.10;
         if (cycle > 1) return;
         const travel = cycle;
-        const x = sourcePoint.x + (targetPoint.x - sourcePoint.x) * travel;
-        const y = sourcePoint.y + (targetPoint.y - sourcePoint.y) * travel;
-        const radius = active ? 5.0 : 3.7 + edge.intensity * 0.5;
+        const dx = targetPoint.x - sourcePoint.x;
+        const dy = targetPoint.y - sourcePoint.y;
+        const x = sourcePoint.x + dx * travel;
+        const y = sourcePoint.y + dy * travel;
+        const angle = Math.atan2(dy, dx);
+        const size = active ? 8.8 : 6.6 + edge.intensity * 1.0;
+        const alpha = hasFocus ? (active ? 1.0 : 0.16) : 0.92;
 
-        pinballContext.beginPath();
-        pinballContext.arc(x, y, radius, 0, Math.PI * 2);
-        pinballContext.fillStyle = active ? "rgba(255,255,255,1)" : "rgba(255,255,255,0.96)";
-        pinballContext.fill();
-
-        pinballContext.beginPath();
-        pinballContext.arc(x, y, radius + (active ? 1.4 : 0.9), 0, Math.PI * 2);
-        pinballContext.strokeStyle = rgbaFromHex(edge.color, active ? 0.95 : 0.82);
-        pinballContext.lineWidth = active ? 1.5 : 1.1;
-        pinballContext.stroke();
+        drawDirectionalChevron(pinballContext, x, y, angle, size, edge.color, alpha, active);
       });
     }
 
@@ -162,7 +175,7 @@ def inject_pinball_effect(
     html: str,
     signals: Sequence[Mapping[str, object]] | None = None,
 ) -> str:
-    """Inject bounded one-way dots derived from directional timesheet acknowledgements."""
+    """Inject bounded one-way chevrons derived from directional timesheet acknowledgements."""
     payload = json.dumps(list(signals or ()), ensure_ascii=False).replace("</", "<\\/")
     script = PINBALL_SCRIPT.replace("__PINBALL_SIGNALS__", payload)
     html = html.replace("</style>", f"{PINBALL_STYLE}\n  </style>", 1)
