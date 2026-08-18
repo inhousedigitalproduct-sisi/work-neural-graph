@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+DEFAULT_LLM_CONFIG_PATH = Path("config/llm.conf")
+
+
 @dataclass(frozen=True)
 class LLMProfile:
     provider: str
@@ -18,7 +21,7 @@ class LLMProfile:
 class AppConfig:
     db_path: Path
     log_level: str = "INFO"
-    llm_config_path: Path = Path("config/llm.conf")
+    llm_config_path: Path = DEFAULT_LLM_CONFIG_PATH
     llm_default_provider: str = "openai"
     llm_timeout_seconds: int = 180
     llm_enabled: bool = True
@@ -63,6 +66,14 @@ class AppConfig:
         raise ValueError(f"Unsupported LLM provider: {provider}")
 
 
+def _resolve_llm_config_path() -> Path:
+    """Resolve deployment-owned LLM config without requiring it to be tracked by Git."""
+    configured_path = os.getenv("WNG_LLM_CONFIG", "").strip()
+    if configured_path:
+        return Path(configured_path).expanduser()
+    return DEFAULT_LLM_CONFIG_PATH
+
+
 def _load_parser(config_path: Path) -> ConfigParser:
     parser = ConfigParser()
     if config_path.exists():
@@ -73,7 +84,7 @@ def _load_parser(config_path: Path) -> ConfigParser:
 def get_config() -> AppConfig:
     db_path = Path(os.getenv("WNG_DB_PATH", "data/work_neural_graph.db"))
     log_level = os.getenv("WNG_LOG_LEVEL", "INFO").upper()
-    llm_config_path = Path(os.getenv("WNG_LLM_CONFIG", "config/llm.conf"))
+    llm_config_path = _resolve_llm_config_path()
     parser = _load_parser(llm_config_path)
 
     # Backward compatibility: older llm.conf files stored provider/model directly

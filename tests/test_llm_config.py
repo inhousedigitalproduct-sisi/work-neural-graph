@@ -23,8 +23,15 @@ def _clear_llm_env(monkeypatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
-def test_default_llm_config_uses_openai_without_storing_secret(monkeypatch) -> None:
+def _use_empty_llm_config(monkeypatch, tmp_path: Path) -> Path:
     _clear_llm_env(monkeypatch)
+    config_path = tmp_path / "missing-llm.conf"
+    monkeypatch.setenv("WNG_LLM_CONFIG", str(config_path))
+    return config_path
+
+
+def test_default_llm_config_uses_openai_without_storing_secret(monkeypatch, tmp_path) -> None:
+    _use_empty_llm_config(monkeypatch, tmp_path)
 
     config = get_config()
 
@@ -37,8 +44,8 @@ def test_default_llm_config_uses_openai_without_storing_secret(monkeypatch) -> N
     assert config.embedding_model == "qwen3-embedding:0.6b"
 
 
-def test_llm_config_registers_openai_and_ollama_profiles(monkeypatch) -> None:
-    _clear_llm_env(monkeypatch)
+def test_llm_config_registers_openai_and_ollama_profiles(monkeypatch, tmp_path) -> None:
+    _use_empty_llm_config(monkeypatch, tmp_path)
 
     config = get_config()
     openai_profile = config.llm_profile("openai")
@@ -55,8 +62,44 @@ def test_llm_config_registers_openai_and_ollama_profiles(monkeypatch) -> None:
     assert ollama_profile.host == "http://localhost:11434"
 
 
-def test_llm_profile_rejects_unknown_provider(monkeypatch) -> None:
+def test_external_llm_config_controls_server_models(monkeypatch, tmp_path) -> None:
     _clear_llm_env(monkeypatch)
+    config_path = tmp_path / "server-llm.conf"
+    config_path.write_text(
+        """[llm]
+default_provider = openai
+timeout_seconds = 180
+
+[openai]
+model = gpt-5-mini
+api_key_env = OPENAI_API_KEY
+
+[ollama]
+host = http://localhost:11434
+model = qwen2.5:14b
+
+[embedding]
+enabled = false
+provider = ollama
+model = bge-m3:latest
+
+[analytics]
+llm_enabled = true
+llm_role = interpretation
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("WNG_LLM_CONFIG", str(config_path))
+
+    config = get_config()
+
+    assert config.llm_config_path == config_path
+    assert config.llm_profile("ollama").model == "qwen2.5:14b"
+    assert config.embedding_model == "bge-m3:latest"
+
+
+def test_llm_profile_rejects_unknown_provider(monkeypatch, tmp_path) -> None:
+    _use_empty_llm_config(monkeypatch, tmp_path)
     config = get_config()
 
     with pytest.raises(ValueError, match="Unsupported LLM provider"):

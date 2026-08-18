@@ -8,4 +8,8 @@ data/*.db
 .env
 .env.*
 !.env.example
+
+# Deployment-owned LLM configuration. Keep only the example in Git.
+config/llm.conf
 config/*.local.conf
+!config/llm.example.conf
