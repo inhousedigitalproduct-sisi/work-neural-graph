@@ -288,6 +288,26 @@ def build_sigma_html(
     let cameraRatio = 1;
     let suppressNextStageClick = false;
 
+    const MOTION_FPS = 24;
+    const MOTION_INTERVAL_MS = 1000 / MOTION_FPS;
+    const MOTION_MAX_NODES = 250;
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const motionEnabled = graph.order <= MOTION_MAX_NODES && !reducedMotion;
+    const motionBaseByNode = new Map();
+    let motionIndex = 0;
+    let motionPausedUntil = 0;
+
+    graph.forEachNode((node, attrs) => {{
+      const index = motionIndex++;
+      motionBaseByNode.set(node, {{
+        x: Number(attrs.x),
+        y: Number(attrs.y),
+        amplitude: 0.0035 + (index % 4) * 0.00045,
+        phaseX: index * 1.61803398875,
+        phaseY: index * 2.41421356237,
+      }});
+    }});
+
     const renderer = new Sigma(graph, container, {{
       renderLabels: {label_setting},
       labelColor: {{attribute: "labelColor", color: "#e2e8f0"}},
@@ -342,7 +362,54 @@ def build_sigma_html(
       }},
     }});
 
-    renderer.getCamera().on("updated", state => {{ cameraRatio = state.ratio; renderer.refresh(); }});
+    function pauseMotion(duration=650) {{
+      motionPausedUntil = Math.max(motionPausedUntil, performance.now() + duration);
+    }}
+
+    function syncMotionBase(node) {{
+      if (!node || !motionBaseByNode.has(node)) return;
+      const attrs = graph.getNodeAttributes(node);
+      const state = motionBaseByNode.get(node);
+      state.x = Number(attrs.x);
+      state.y = Number(attrs.y);
+    }}
+
+    function idleMotionPaused() {{
+      return !motionEnabled
+        || document.visibilityState !== "visible"
+        || isDragging
+        || selectedNode
+        || hoveredNode
+        || hoveredEdge
+        || document.activeElement === search
+        || performance.now() < motionPausedUntil;
+    }}
+
+    function runIdleMotion() {{
+      if (idleMotionPaused()) return;
+      const time = performance.now() / 1000;
+      graph.updateEachNodeAttributes((node, attrs) => {{
+        const state = motionBaseByNode.get(node);
+        if (!state) return attrs;
+        return {{
+          ...attrs,
+          x: state.x + Math.sin(time * 0.55 + state.phaseX) * state.amplitude,
+          y: state.y + Math.cos(time * 0.43 + state.phaseY) * state.amplitude,
+        }};
+      }});
+      renderer.refresh();
+    }}
+
+    if (motionEnabled) {{
+      const motionTimer = window.setInterval(runIdleMotion, MOTION_INTERVAL_MS);
+      window.addEventListener("beforeunload", () => window.clearInterval(motionTimer), {{once:true}});
+    }}
+
+    renderer.getCamera().on("updated", state => {{
+      cameraRatio = state.ratio;
+      pauseMotion(650);
+      renderer.refresh();
+    }});
 
     function closeSearchResults() {{
       searchResults.style.display = "none";
@@ -359,6 +426,7 @@ def build_sigma_html(
       search.value = node.label;
       closeSearchResults();
       focusNode(node.id, true);
+      search.blur();
     }}
 
     function renderSearchResults(query) {{
@@ -425,6 +493,7 @@ def build_sigma_html(
 
     function focusNode(node, navigate=false) {{
       selectedNode = node || null;
+      pauseMotion(navigate ? 900 : 500);
       if (!node) {{
         search.value = "";
         closeSearchResults();
@@ -461,6 +530,7 @@ def build_sigma_html(
     }});
     renderer.on("enterNode", ({{node}}) => {{
       hoveredNode = node;
+      pauseMotion(500);
       showNodeInfo(node);
       renderer.refresh();
     }});
@@ -471,6 +541,7 @@ def build_sigma_html(
     }});
     renderer.on("enterEdge", ({{edge}}) => {{
       hoveredEdge = edge;
+      pauseMotion(500);
       if (!hoveredNode) showEdgeInfo(edge);
     }});
     renderer.on("leaveEdge", () => {{
@@ -478,7 +549,12 @@ def build_sigma_html(
       restoreInfoPanel();
     }});
 
-    renderer.on("downNode", ({{node}}) => {{ isDragging = true; draggedNode = node; renderer.getCamera().disable(); }});
+    renderer.on("downNode", ({{node}}) => {{
+      isDragging = true;
+      draggedNode = node;
+      pauseMotion(1200);
+      renderer.getCamera().disable();
+    }});
     renderer.getMouseCaptor().on("mousemovebody", event => {{
       if (!isDragging || !draggedNode) return;
       const pos = renderer.viewportToGraph(event);
@@ -488,10 +564,23 @@ def build_sigma_html(
       event.original?.preventDefault?.();
       event.original?.stopPropagation?.();
     }});
-    renderer.getMouseCaptor().on("mouseup", () => {{ isDragging = false; draggedNode = null; renderer.getCamera().enable(); }});
+    renderer.getMouseCaptor().on("mouseup", () => {{
+      const releasedNode = draggedNode;
+      isDragging = false;
+      draggedNode = null;
+      renderer.getCamera().enable();
+      syncMotionBase(releasedNode);
+      pauseMotion(700);
+    }});
 
-    search.addEventListener("input", () => renderSearchResults(search.value));
-    search.addEventListener("focus", () => renderSearchResults(search.value));
+    search.addEventListener("input", () => {{
+      pauseMotion(700);
+      renderSearchResults(search.value);
+    }});
+    search.addEventListener("focus", () => {{
+      pauseMotion(700);
+      renderSearchResults(search.value);
+    }});
     search.addEventListener("keydown", event => {{
       if (event.key === "Escape") {{
         closeSearchResults();
@@ -511,7 +600,10 @@ def build_sigma_html(
       if (!searchWrap.contains(event.target)) closeSearchResults();
     }});
 
-    fitButton.addEventListener("click", () => renderer.getCamera().animatedReset({{duration:360}}));
+    fitButton.addEventListener("click", () => {{
+      pauseMotion(900);
+      renderer.getCamera().animatedReset({{duration:360}});
+    }});
     isolateButton.addEventListener("click", () => {{
       hideIsolated = !hideIsolated;
       isolateButton.textContent = hideIsolated ? "Show Isolated" : "Hide Isolated";
@@ -521,6 +613,7 @@ def build_sigma_html(
       focusNode(null);
       hideIsolated = false;
       isolateButton.textContent = "Hide Isolated";
+      pauseMotion(900);
       renderer.getCamera().animatedReset({{duration:360}});
       renderer.refresh();
     }});
