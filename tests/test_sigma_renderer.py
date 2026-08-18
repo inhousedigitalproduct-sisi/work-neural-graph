@@ -1,3 +1,6 @@
+from pathlib import Path
+import warnings
+
 import networkx as nx
 import pandas as pd
 
@@ -98,3 +101,13 @@ def test_sigma_renderer_supports_deep_zoom_note_evidence_and_display_coordinate_
     assert "Math.min(6.2, attrs.size * 1.05)" in rendered
     assert "Math.min(3.8, attrs.size * 1.15)" in rendered
     assert "requestAnimationFrame" not in rendered
+
+
+def test_sigma_renderer_source_compiles_without_escape_warnings() -> None:
+    source_path = Path("src/graph/sigma_renderer.py")
+    source = source_path.read_text(encoding="utf-8")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", SyntaxWarning)
+        warnings.simplefilter("error", DeprecationWarning)
+        compile(source, str(source_path), "exec")
