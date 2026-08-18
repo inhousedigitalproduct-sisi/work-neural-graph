@@ -7,23 +7,19 @@ import streamlit.components.v1 as components
 from src.analytics.service import AnalyticsService
 from src.graph.builder import GraphFilterConfig, apply_graph_filters
 from src.graph.collaboration import (
-    apply_collaboration_threshold,
     build_collaboration_clusters,
-    build_collaboration_graph,
     build_key_connectors,
     build_low_connectivity,
     build_ranked_collaborators,
     build_strongest_pairs,
 )
-from src.graph.collaboration_mentions import (
-    build_acknowledgement_insights,
-    extract_collaboration_mentions,
-    load_employee_aliases,
-)
+from src.graph.collaboration_mentions import extract_collaboration_mentions, load_employee_aliases
+from src.graph.note_collaboration import apply_note_evidence_threshold, build_note_collaboration_graph
 from src.graph.sigma_renderer import build_sigma_html
 from src.services import TimesheetDataService
 from src.ui.components import render_analytics_summary
 from src.utils.config import get_config
+
 
 config = get_config()
 dataset_service = TimesheetDataService(config.db_path)
@@ -31,8 +27,8 @@ analytics_service = AnalyticsService(config.db_path)
 
 st.title("Neural Graph — Kolaborasi")
 st.caption(
-    "Eksplorasi hubungan antar-karyawan berdasarkan task yang sama. "
-    "Atur nama project dan periode untuk melihat bagaimana pola kolaborasi berubah pada scope yang berbeda."
+    "Eksplorasi hubungan antar-karyawan berdasarkan penyebutan nama rekan secara eksplisit pada Note timesheet. "
+    "Task dan Project dipakai sebagai konteks evidence, bukan sebagai pembentuk relasi."
 )
 
 source_dataframe = dataset_service.load_active_dataset()
@@ -90,62 +86,62 @@ filters = GraphFilterConfig(
     end_date=end_date.isoformat(),
 )
 filtered = apply_graph_filters(source_dataframe, filters)
-result = build_collaboration_graph(filtered)
+if filtered.empty:
+    st.info("Scope yang dipilih tidak menghasilkan data. Ubah Nama Project atau Range Date.")
+    st.stop()
+
 mention_result = extract_collaboration_mentions(
     filtered,
     employee_roster=source_dataframe["employee"].dropna().astype(str).tolist(),
     aliases=load_employee_aliases(),
 )
+result = build_note_collaboration_graph(filtered, mention_result, include_isolated=True)
 snapshot = analytics_service.build_snapshot(filters=filters)
-
-if result.filtered_dataframe.empty:
-    st.info("Scope yang dipilih tidak menghasilkan data. Ubah Nama Project atau Range Date.")
-    st.stop()
 
 with st.sidebar:
     st.subheader("Collaboration Graph")
     node_size_metric = st.selectbox(
         "Ukuran node",
-        ["collaborator_count", "collaborative_task_count", "collaborative_hours", "project_count"],
+        ["collaborator_count", "collaborative_task_count", "project_count", "collaborative_hours"],
         format_func=lambda value: {
             "collaborator_count": "Jumlah kolaborator",
-            "collaborative_task_count": "Task kolaboratif",
-            "collaborative_hours": "Jam kolaboratif",
-            "project_count": "Project kolaboratif",
+            "collaborative_task_count": "Evidence Note",
+            "project_count": "Project pada evidence",
+            "collaborative_hours": "Jam terkait evidence",
         }[value],
         key="neural_graph_node_size_metric",
     )
-    st.caption("Warna & ketebalan garis mengikuti frekuensi kolaborasi (jumlah task bersama).")
+    st.caption("Warna & ketebalan garis mengikuti jumlah evidence penyebutan nama pada Note.")
 
-    min_shared_tasks = 1
-    slider_key = "neural_graph_min_shared_tasks"
+    min_evidence = 1
+    slider_key = "neural_graph_min_note_evidence"
     if not result.edge_dataframe.empty:
         maximum = max(1, int(result.edge_dataframe["shared_task_count"].max()))
         current = int(st.session_state.get(slider_key, 1) or 1)
         st.session_state[slider_key] = min(max(current, 1), maximum)
         if maximum > 1:
-            min_shared_tasks = st.slider(
-                "Minimum task bersama",
+            min_evidence = st.slider(
+                "Minimum evidence Note",
                 min_value=1,
                 max_value=maximum,
                 key=slider_key,
             )
         else:
             st.session_state[slider_key] = 1
-            st.caption("Minimum task bersama: 1")
+            st.caption("Minimum evidence Note: 1")
     else:
         st.session_state[slider_key] = 1
-        st.caption("Minimum task bersama: 1")
+        st.caption("Minimum evidence Note: 1")
 
     show_isolated = st.toggle(
         "Show Isolated",
         value=False,
         key="neural_graph_show_isolated",
-        help="Secara default hanya karyawan yang masih memiliki relasi pada threshold aktif yang ditampilkan.",
+        help="Menampilkan employee yang tidak memiliki evidence penyebutan nama pada threshold aktif.",
     )
 
-active_result = apply_collaboration_threshold(result, min_shared_tasks, include_isolated=False)
-all_threshold_result = apply_collaboration_threshold(result, min_shared_tasks, include_isolated=True)
+active_result = apply_note_evidence_threshold(result, min_evidence, include_isolated=False)
+all_threshold_result = apply_note_evidence_threshold(result, min_evidence, include_isolated=True)
 display_result = all_threshold_result if show_isolated else active_result
 
 with st.sidebar:
@@ -159,33 +155,28 @@ summary = display_result.summary
 scope_project = ", ".join(selected_projects) if selected_projects else "Semua project"
 st.caption(
     f"{start_date:%d %b %Y} → {end_date:%d %b %Y} • {scope_project} • "
-    f"minimum {min_shared_tasks} task bersama"
+    f"minimum {min_evidence} evidence Note"
 )
 
 a, b, c = st.columns(3)
 a.metric("Karyawan", summary.employees)
-b.metric("Relasi kolaborasi", summary.collaboration_links)
-c.metric("Task kolaboratif", summary.collaborative_tasks)
+b.metric("Relasi evidence", summary.collaboration_links)
+c.metric("Evidence kolaborasi (Note)", summary.collaborative_tasks)
 d, e, f = st.columns(3)
-d.metric("Project kolaboratif", summary.projects)
-e.metric("Jam pada task kolaboratif", f"{summary.collaborative_hours:.2f}")
+d.metric("Project pada evidence", summary.projects)
+e.metric("Jam terkait evidence", f"{summary.collaborative_hours:.2f}")
 f.metric("Rata-rata kolaborator", f"{summary.average_collaborators:.2f}")
-
-acknowledgement_insights = build_acknowledgement_insights(
-    result.edge_dataframe,
-    mention_result.directional_dataframe,
-)
 
 st.subheader("Peta kolaborasi interaktif")
 st.caption(
-    "Mode eksplorasi ringan: node dibuat compact, relasi tetap menonjol, dan zoom diperdalam untuk membaca jaringan padat. "
-    "Metric node, detail, search, dan summary mengikuti Minimum task bersama yang aktif."
+    "Garis hanya terbentuk dari penyebutan nama karyawan pada Note. Memilih employee dari pencarian akan memfokuskan kamera "
+    "ke dot employee tersebut tanpa menghilangkan konteks relasi langsungnya."
 )
 if active_result.summary.collaboration_links == 0:
     if show_isolated:
-        st.info("Threshold aktif tidak menghasilkan relasi. Karyawan tanpa relasi tetap ditampilkan karena Show Isolated aktif.")
+        st.info("Belum ada evidence penyebutan kolaborator pada Note untuk threshold aktif. Employee tetap ditampilkan karena Show Isolated aktif.")
     else:
-        st.info("Threshold aktif tidak menghasilkan relasi. Turunkan Minimum task bersama atau aktifkan Show Isolated.")
+        st.info("Belum ada evidence penyebutan kolaborator pada Note untuk threshold aktif. Turunkan threshold atau aktifkan Show Isolated.")
 
 sigma_html = build_sigma_html(
     display_result.graph,
@@ -195,7 +186,7 @@ sigma_html = build_sigma_html(
     edge_width_metric="shared_task_count",
     show_labels=show_labels,
 )
-# Isolated visibility is controlled by Streamlit so graph metrics/search/detail stay in sync.
+# Visibility isolated dikontrol Streamlit agar summary/search/detail memakai graph yang sama.
 sigma_html = sigma_html.replace(
     '<button id="isolate">Hide Isolated</button>',
     '<button id="isolate" style="display:none" aria-hidden="true">Hide Isolated</button>',
@@ -205,19 +196,16 @@ components.html(sigma_html, height=835, scrolling=False)
 with st.expander("Cara membaca Collaboration Graph", expanded=False):
     st.markdown(
         """
-- **Node kecil = karyawan.** Ukuran node mengikuti metric yang dipilih di sidebar dan dihitung ulang setelah threshold aktif.
-- **Garis = dua karyawan mengerjakan `task_key` yang sama** pada Nama Project/Range Date aktif, walaupun tanggal pengerjaannya berbeda.
-- **Minimum task bersama** memfilter relasi dan sekaligus menghitung ulang node, collaborator, shared task, hours, project, search, detail, dan summary graph.
-- **Show Isolated** menampilkan kembali karyawan yang tidak memiliki relasi pada threshold aktif; default-nya disembunyikan.
-- **Warna & ketebalan garis = frekuensi kolaborasi**, dihitung dari jumlah task bersama untuk pasangan karyawan tersebut.
-- **Bar scale** menunjukkan rentang frekuensi kolaborasi dari paling sedikit ke paling banyak pada graph aktif.
-- Gunakan **scroll untuk zoom**, termasuk zoom-in lebih jauh pada cluster padat; drag canvas untuk pan dan drag node untuk merapikan posisi lokal.
-- Klik atau cari karyawan untuk menonjolkan relasi langsung tanpa membesarkan node secara berlebihan.
-- Data penyebutan nama pada Note tetap dianalisis di bagian **Penyebutan Kolaborator (Note)** di bawah graph; data tersebut tidak dianimasikan pada network.
-- **Nama satu kata yang unik di seluruh roster** diterima dengan confidence 92% mulai dari 3 karakter. Jika token yang sama dimiliki lebih dari satu karyawan, alias tersebut dianggap ambigu.
-- Satu target hanya dihitung **sekali per timesheet entry**, walaupun namanya disebut berulang kali pada Note yang sama.
-- Alias/nickname eksplisit yang tidak berasal dari nama canonical dapat dikonfigurasi di `config/employee_aliases.json`.
-- Reciprocity pada penyebutan nama adalah sinyal pola dokumentasi kolaborasi, **bukan penilaian kualitas atau performa individu**.
+- **Node = karyawan.**
+- **Garis = ada evidence eksplisit pada Note**, yaitu pemilik timesheet menyebut nama employee lain yang lolos deterministic matching.
+- **Task yang sama tidak lagi otomatis dianggap kolaborasi.** Task dan Project hanya menjadi konteks dari evidence Note.
+- **Warna & ketebalan garis = jumlah evidence Note** pada pasangan tersebut.
+- **Minimum evidence Note** memfilter relasi dan menghitung ulang node, collaborator, ranking, cluster, search, detail, dan summary graph.
+- **Show Isolated** menampilkan employee tanpa evidence relasi pada threshold aktif.
+- Klik atau cari employee untuk menonjolkan relasi langsung. Search memindahkan kamera ke posisi dot employee pada koordinat display Sigma.
+- Nama satu kata yang unik di seluruh roster diterima dengan confidence 92% mulai dari 3 karakter; token ambigu ditolak.
+- Satu target dihitung maksimum sekali per timesheet entry meskipun namanya disebut berulang pada Note yang sama.
+- Tidak adanya evidence Note berarti **tidak ditemukan evidence penyebutan kolaborator**, bukan bukti bahwa employee tidak berkolaborasi.
 """
     )
 
@@ -232,20 +220,20 @@ rank_tab, pair_tab, connector_tab, low_tab, cluster_tab = st.tabs(
     ["Top Collaborators", "Strongest Pairs", "Key Connectors", "Low Connectivity", "Clusters"]
 )
 with rank_tab:
-    st.caption("Ranking mengutamakan breadth kolaborasi, lalu shared task, jam kolaboratif, dan project.")
+    st.caption("Ranking mengutamakan breadth relasi, lalu jumlah evidence Note, jam terkait evidence, dan project.")
     table = ranked.rename(
         columns={
             "employee": "Karyawan",
             "collaborator_count": "Collaborators",
-            "collaborative_task_count": "Shared tasks",
-            "collaborative_hours": "Collaborative hours",
+            "collaborative_task_count": "Evidence Note",
+            "collaborative_hours": "Related evidence hours",
             "project_count": "Projects",
         }
     )
     st.dataframe(table, use_container_width=True, hide_index=True)
 
 with pair_tab:
-    st.caption("Pasangan dengan frekuensi shared task terkuat pada threshold aktif.")
+    st.caption("Pasangan dengan evidence penyebutan nama terbanyak pada threshold aktif.")
     table = strongest.copy()
     if not table.empty:
         table["projects"] = table["projects"].map(lambda values: ", ".join(values))
@@ -254,16 +242,16 @@ with pair_tab:
         columns={
             "source": "Karyawan A",
             "target": "Karyawan B",
-            "shared_task_count": "Shared tasks",
+            "shared_task_count": "Evidence Note",
             "related_hours": "Related hours",
             "projects": "Projects",
-            "shared_tasks": "Tasks",
+            "shared_tasks": "Task context",
         }
     )
     st.dataframe(table, use_container_width=True, hide_index=True)
 
 with connector_tab:
-    st.caption("Connector score memakai weighted betweenness centrality untuk menemukan penghubung antarbagian jaringan; bukan skor performa.")
+    st.caption("Connector score memakai weighted betweenness centrality pada graph evidence Note; bukan skor performa.")
     table = connectors.rename(
         columns={
             "employee": "Karyawan",
@@ -274,19 +262,19 @@ with connector_tab:
     st.dataframe(table, use_container_width=True, hide_index=True)
 
 with low_tab:
-    st.caption("Menunjukkan konektivitas graph yang rendah atau isolated pada scope/threshold aktif; bukan penilaian performa individu.")
+    st.caption("Konektivitas rendah berarti evidence Note yang menghubungkan employee relatif sedikit pada scope aktif; bukan penilaian performa.")
     table = low_connectivity.rename(
         columns={
             "employee": "Karyawan",
             "collaborator_count": "Collaborators",
-            "collaborative_task_count": "Shared tasks",
+            "collaborative_task_count": "Evidence Note",
             "project_count": "Projects",
         }
     )
     st.dataframe(table, use_container_width=True, hide_index=True)
 
 with cluster_tab:
-    st.caption("Community/cluster dihitung dari graph aktif sehingga warna cluster dapat dibaca sebagai insight, bukan hanya dekorasi.")
+    st.caption("Community/cluster dihitung dari hubungan penyebutan nama pada Note.")
     table = clusters.copy()
     if not table.empty:
         table["members"] = table["members"].map(lambda values: ", ".join(values))
@@ -296,7 +284,7 @@ with cluster_tab:
             "size": "Members",
             "members": "Karyawan",
             "internal_links": "Internal links",
-            "shared_task_strength": "Shared-task strength",
+            "shared_task_strength": "Evidence strength",
         }
     )
     st.dataframe(table, use_container_width=True, hide_index=True)
@@ -314,45 +302,36 @@ render_analytics_summary(
     average_continuity_ratio=snapshot.kpi.average_continuity_ratio,
 )
 
-with st.expander("Relasi kolaborasi", expanded=False):
-    table = display_result.edge_dataframe.drop(columns=["shared_task_keys"], errors="ignore").copy()
+with st.expander("Relasi kolaborasi berbasis Note", expanded=False):
+    table = display_result.edge_dataframe.drop(columns=["shared_task_keys", "evidence_entry_ids"], errors="ignore").copy()
     if not table.empty:
         table["shared_tasks"] = table["shared_tasks"].map(lambda values: ", ".join(values))
         table["projects"] = table["projects"].map(lambda values: ", ".join(values))
-    st.dataframe(table, use_container_width=True, hide_index=True)
-
-with st.expander("Penyebutan Kolaborator (Note)", expanded=False):
-    st.caption(
-        "Bagian ini memakai scope Project/Range Date dan tetap memisahkan shared-task collaboration dari penyebutan nama rekan secara eksplisit di Note."
-    )
-    if acknowledgement_insights.empty:
-        st.info("Belum ada shared-task atau evidence penyebutan nama pada scope aktif.")
-    else:
-        insight_table = acknowledgement_insights.copy()
-        insight_table["acknowledgement_reciprocity"] = (
-            insight_table["acknowledgement_reciprocity"].astype(float) * 100
-        ).round(1)
-        insight_table = insight_table.rename(
+        table = table.rename(
             columns={
-                "employee_a": "Karyawan A",
-                "employee_b": "Karyawan B",
-                "shared_task_count": "Shared task",
+                "source": "Karyawan A",
+                "target": "Karyawan B",
+                "shared_task_count": "Evidence Note",
+                "shared_tasks": "Task context",
+                "projects": "Projects",
+                "related_hours": "Related hours",
                 "a_to_b_count": "A menyebut B",
                 "b_to_a_count": "B menyebut A",
-                "acknowledgement_reciprocity": "Reciprocity (%)",
-                "evidence_type": "Pola evidence",
             }
         )
-        st.dataframe(insight_table, use_container_width=True, hide_index=True)
+    st.dataframe(table, use_container_width=True, hide_index=True)
 
-    if not mention_result.directional_dataframe.empty:
-        st.markdown("**Evidence penyebutan dari Note**")
+with st.expander("Evidence penyebutan dari Note", expanded=False):
+    st.caption("Source adalah pemilik timesheet; target adalah employee yang disebut pada Note.")
+    if mention_result.directional_dataframe.empty:
+        st.info("Belum ada evidence penyebutan nama employee lain pada Note di scope aktif.")
+    else:
         direction_table = mention_result.directional_dataframe.copy().rename(
             columns={
                 "source_employee": "Pemilik timesheet",
                 "target_employee": "Nama yang disebut",
-                "acknowledgement_entry_count": "Jumlah timesheet",
-                "unique_task_count": "Task unik",
+                "acknowledgement_entry_count": "Jumlah evidence",
+                "unique_task_count": "Task context unik",
                 "unique_project_count": "Project unik",
                 "first_date": "Pertama",
                 "last_date": "Terakhir",
@@ -365,4 +344,16 @@ with st.expander("Detail karyawan", expanded=False):
     if not table.empty:
         for column in ["collaborators", "top_collaborators", "top_tasks"]:
             table[column] = table[column].map(lambda values: ", ".join(values))
+        table = table.rename(
+            columns={
+                "employee": "Karyawan",
+                "collaborator_count": "Collaborators",
+                "collaborative_task_count": "Evidence Note",
+                "project_count": "Projects",
+                "collaborative_hours": "Related evidence hours",
+                "collaborators": "Collaborator list",
+                "top_collaborators": "Top collaborators",
+                "top_tasks": "Task context",
+            }
+        )
     st.dataframe(table, use_container_width=True, hide_index=True)

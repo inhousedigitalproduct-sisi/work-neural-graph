@@ -18,7 +18,7 @@ def _sample_graph() -> tuple[nx.Graph, pd.DataFrame, pd.DataFrame]:
                 "collaborative_hours": 8.0,
                 "project_count": 1,
                 "collaborators": ["Bob"],
-                "top_collaborators": ["Bob (5 task)"],
+                "top_collaborators": ["Bob (5 evidence)"],
                 "top_tasks": ["T-1"],
             },
             {
@@ -28,7 +28,7 @@ def _sample_graph() -> tuple[nx.Graph, pd.DataFrame, pd.DataFrame]:
                 "collaborative_hours": 12.0,
                 "project_count": 1,
                 "collaborators": ["Alice", "Carol"],
-                "top_collaborators": ["Alice (5 task)", "Carol (2 task)"],
+                "top_collaborators": ["Alice (5 evidence)", "Carol (2 evidence)"],
                 "top_tasks": ["T-1", "T-2"],
             },
             {
@@ -38,7 +38,7 @@ def _sample_graph() -> tuple[nx.Graph, pd.DataFrame, pd.DataFrame]:
                 "collaborative_hours": 4.0,
                 "project_count": 1,
                 "collaborators": ["Bob"],
-                "top_collaborators": ["Bob (2 task)"],
+                "top_collaborators": ["Bob (2 evidence)"],
                 "top_tasks": ["T-2"],
             },
         ]
@@ -49,6 +49,8 @@ def _sample_graph() -> tuple[nx.Graph, pd.DataFrame, pd.DataFrame]:
                 "source": "Alice",
                 "target": "Bob",
                 "shared_task_count": 5,
+                "a_to_b_count": 3,
+                "b_to_a_count": 2,
                 "shared_tasks": ["T-1"],
                 "projects": ["Alpha"],
                 "related_hours": 8.0,
@@ -57,6 +59,8 @@ def _sample_graph() -> tuple[nx.Graph, pd.DataFrame, pd.DataFrame]:
                 "source": "Bob",
                 "target": "Carol",
                 "shared_task_count": 2,
+                "a_to_b_count": 2,
+                "b_to_a_count": 0,
                 "shared_tasks": ["T-2"],
                 "projects": ["Alpha"],
                 "related_hours": 4.0,
@@ -73,7 +77,7 @@ def test_node_scale_stays_compact() -> None:
     assert max(scaled.values()) <= 5.8
 
 
-def test_sigma_renderer_supports_deep_zoom_without_animation_overlay() -> None:
+def test_sigma_renderer_supports_deep_zoom_note_evidence_and_display_coordinate_focus() -> None:
     graph, nodes, edges = _sample_graph()
 
     rendered = build_sigma_html(
@@ -87,9 +91,10 @@ def test_sigma_renderer_supports_deep_zoom_without_animation_overlay() -> None:
 
     assert "minCameraRatio: 0.004" in rendered
     assert "maxCameraRatio: 10" in rendered
-    assert "ratio: 0.18" in rendered
+    assert "Evidence kolaborasi (Note)" in rendered
+    assert "renderer.getNodeDisplayData(node)" in rendered
+    assert "ratio: 0.28" in rendered
+    assert "const attrs = graph.getNodeAttributes(node);\n        renderer.getCamera().animate" not in rendered
     assert "Math.min(6.2, attrs.size * 1.05)" in rendered
     assert "Math.min(3.8, attrs.size * 1.15)" in rendered
-    assert "pinball-signal-layer" not in rendered
     assert "requestAnimationFrame" not in rendered
-    assert "drawDirectionalChevron" not in rendered

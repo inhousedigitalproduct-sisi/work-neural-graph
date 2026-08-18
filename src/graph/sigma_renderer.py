@@ -71,13 +71,10 @@ def _community_map(graph: nx.Graph) -> dict[str, int]:
             ]
         except Exception:
             communities = [set(component) for component in nx.connected_components(connected)]
-
     communities.sort(key=lambda group: (-len(group), sorted(group)[0] if group else ""))
     for index, members in enumerate(communities):
-        community_id = index + 1
         for node in members:
-            mapping[str(node)] = community_id
-
+            mapping[str(node)] = index + 1
     for node, degree in graph.degree():
         if degree == 0:
             mapping[str(node)] = 0
@@ -85,10 +82,7 @@ def _community_map(graph: nx.Graph) -> dict[str, int]:
 
 
 def _edge_color(value: float, minimum: float, maximum: float) -> str:
-    if maximum <= minimum:
-        ratio = 0.5
-    else:
-        ratio = max(0.0, min(1.0, (float(value) - minimum) / (maximum - minimum)))
+    ratio = 0.5 if maximum <= minimum else max(0.0, min(1.0, (float(value) - minimum) / (maximum - minimum)))
     rgb = tuple(
         round(low + (high - low) * ratio)
         for low, high in zip(COLLABORATION_LOW_COLOR, COLLABORATION_HIGH_COLOR)
@@ -105,7 +99,7 @@ def build_sigma_html(
     edge_width_metric: str,
     show_labels: bool,
 ) -> str:
-    """Build a lightweight exploration-first Sigma.js collaboration view."""
+    """Build a lightweight Sigma.js collaboration explorer."""
     if node_dataframe.empty:
         return "<div style='padding:24px;color:#94a3b8'>Tidak ada node untuk ditampilkan.</div>"
 
@@ -123,14 +117,13 @@ def build_sigma_html(
     node_sizes = _sqrt_scaled(node_dataframe[node_size_metric])
     edge_sizes = _linear_scaled(edge_dataframe[edge_width_metric]) if not edge_dataframe.empty else {}
     community_by_node = _community_map(graph)
-
-    collaboration_values = (
-        pd.to_numeric(edge_dataframe["shared_task_count"], errors="coerce").fillna(0.0).tolist()
+    values = (
+        pd.to_numeric(edge_dataframe[edge_width_metric], errors="coerce").fillna(0.0).tolist()
         if not edge_dataframe.empty
         else []
     )
-    collaboration_min = float(min(collaboration_values)) if collaboration_values else 0.0
-    collaboration_max = float(max(collaboration_values)) if collaboration_values else 0.0
+    collaboration_min = float(min(values)) if values else 0.0
+    collaboration_max = float(max(values)) if values else 0.0
 
     nodes: list[dict[str, Any]] = []
     for index, row in node_dataframe.reset_index(drop=True).iterrows():
@@ -138,11 +131,7 @@ def build_sigma_html(
         x, y = positions.get(employee, (0.0, 0.0))
         community = int(community_by_node.get(employee, 0))
         collaborator_count = int(row.get("collaborator_count", 0))
-        community_color = (
-            COMMUNITY_COLORS[(community - 1) % len(COMMUNITY_COLORS)]
-            if community > 0
-            else ISOLATED_COLOR
-        )
+        color = COMMUNITY_COLORS[(community - 1) % len(COMMUNITY_COLORS)] if community > 0 else ISOLATED_COLOR
         nodes.append(
             {
                 "id": employee,
@@ -150,8 +139,8 @@ def build_sigma_html(
                 "x": float(x),
                 "y": float(y),
                 "size": float(node_sizes.get(str(index), 3.5)),
-                "base_color": community_color,
-                "color": community_color,
+                "base_color": color,
+                "color": color,
                 "community": community,
                 "isolated": collaborator_count == 0,
                 "collaborator_count": collaborator_count,
@@ -166,17 +155,18 @@ def build_sigma_html(
 
     edges: list[dict[str, Any]] = []
     for index, row in edge_dataframe.reset_index(drop=True).iterrows():
-        collaboration_count = int(row.get("shared_task_count", 0))
+        evidence_count = int(row.get(edge_width_metric, 0) or 0)
         edges.append(
             {
                 "id": f"edge-{index}",
                 "source": str(row["source"]),
                 "target": str(row["target"]),
                 "size": float(edge_sizes.get(str(index), 1.0)),
-                "color": _edge_color(collaboration_count, collaboration_min, collaboration_max),
-                "collaboration_count": collaboration_count,
-                "shared_task_count": collaboration_count,
-                "shared_tasks": list(row.get("shared_tasks", []) or []),
+                "color": _edge_color(evidence_count, collaboration_min, collaboration_max),
+                "collaboration_count": evidence_count,
+                "a_to_b_count": int(row.get("a_to_b_count", 0) or 0),
+                "b_to_a_count": int(row.get("b_to_a_count", 0) or 0),
+                "tasks": list(row.get("shared_tasks", []) or []),
                 "projects": list(row.get("projects", []) or []),
                 "related_hours": float(row.get("related_hours", 0.0)),
             }
@@ -208,11 +198,10 @@ def build_sigma_html(
     .toolbar select, .toolbar button {{ height:32px; border-radius:7px; border:1px solid #334155; background:#111827; color:#e2e8f0; padding:0 9px; }}
     .toolbar select {{ min-width:240px; flex:1; }}
     .toolbar button {{ cursor:pointer; white-space:nowrap; }}
-    .toolbar button.active {{ border-color:#60a5fa; background:#172554; color:#dbeafe; }}
     .toolbar .hint {{ color:#64748b; font-size:10px; white-space:nowrap; }}
     #stage {{ height:560px; position:relative; border:1px solid #1e293b; background:#020617; box-sizing:border-box; }}
     #sigma-container {{ position:absolute; inset:0; }}
-    #info-panel {{ position:absolute; display:none; z-index:9; right:12px; top:12px; width:300px; max-height:180px; overflow:auto; padding:10px 12px; border:1px solid #334155; border-radius:9px; background:rgba(15,23,42,.96); font-size:12px; line-height:1.45; }}
+    #info-panel {{ position:absolute; display:none; z-index:9; right:12px; top:12px; width:310px; max-height:190px; overflow:auto; padding:10px 12px; border:1px solid #334155; border-radius:9px; background:rgba(15,23,42,.96); font-size:12px; line-height:1.45; }}
     #legend {{ position:absolute; left:12px; bottom:12px; z-index:7; width:238px; padding:10px 11px; border:1px solid rgba(71,85,105,.72); border-radius:11px; background:rgba(15,23,42,.92); }}
     .legend-title {{ color:#f8fafc; font-size:11px; font-weight:800; }}
     .legend-subtitle {{ color:#94a3b8; font-size:9px; margin-top:2px; line-height:1.3; }}
@@ -231,8 +220,6 @@ def build_sigma_html(
     .detail-scroll {{ min-height:0; height:100%; overflow-y:auto; padding-right:4px; }}
     .list-row {{ display:flex; justify-content:space-between; gap:10px; padding:4px 0; border-bottom:1px solid rgba(51,65,85,.4); }}
     .pill {{ display:inline-block; margin:3px 3px 0 0; padding:2px 6px; border:1px solid #334155; border-radius:999px; color:#cbd5e1; font-size:10px; }}
-    @media(max-width:900px) {{ .toolbar .hint {{ display:none; }} #legend {{ width:210px; }} }}
-    @media(max-width:760px) {{ #stage {{ height:470px; }} #detail {{ height:250px; overflow-y:auto; }} .detail-grid {{ grid-template-columns:1fr; height:auto; }} .summary-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} #info-panel {{ width:240px; }} #legend {{ width:180px; }} }}
   </style>
 </head>
 <body>
@@ -248,7 +235,7 @@ def build_sigma_html(
     <div id="info-panel"></div>
     <div id="legend"></div>
   </div>
-  <div id="detail"><span class="muted">Klik node untuk melihat relasi utama. Gunakan scroll untuk zoom jauh dan drag untuk eksplorasi.</span></div>
+  <div id="detail"><span class="muted">Klik node untuk melihat evidence relasi utama. Gunakan scroll untuk zoom jauh dan drag untuk eksplorasi.</span></div>
 
   <script type="module">
     import Graph from "https://cdn.jsdelivr.net/npm/graphology@0.26.0/+esm";
@@ -269,11 +256,11 @@ def build_sigma_html(
     const resetButton = document.getElementById("reset");
 
     const scale = data.collaboration_scale || {{min:0, max:0, low_color:"#475569", high_color:"#fb923c"}};
-    legend.innerHTML = `<div class="legend-title">Frekuensi kolaborasi</div>` +
-      `<div class="legend-subtitle">Warna & ketebalan garis = jumlah task bersama</div>` +
+    legend.innerHTML = `<div class="legend-title">Evidence kolaborasi (Note)</div>` +
+      `<div class="legend-subtitle">Warna & ketebalan garis = jumlah evidence penyebutan nama</div>` +
       `<div class="scale-bar" style="background:linear-gradient(90deg,${{scale.low_color}},${{scale.high_color}})"></div>` +
-      `<div class="scale-labels"><span>${{scale.min}} task</span><span>${{scale.max}} task</span></div>` +
-      `<div class="legend-note">Warna node = community/cluster kolaborasi.</div>`;
+      `<div class="scale-labels"><span>${{scale.min}} evidence</span><span>${{scale.max}} evidence</span></div>` +
+      `<div class="legend-note">Warna node = community/cluster evidence Note.</div>`;
 
     data.nodes.slice().sort((a,b) => a.label.localeCompare(b.label)).forEach(n => {{
       const option = document.createElement("option");
@@ -303,13 +290,11 @@ def build_sigma_html(
       nodeReducer: (node, attrs) => {{
         const result = {{...attrs, color: attrs.base_color || attrs.color, labelColor: "#e2e8f0"}};
         if (hideIsolated && attrs.isolated) {{ result.hidden = true; return result; }}
-
         const focus = selectedNode || hoveredNode;
         const isNeighbor = focus && graph.areNeighbors(node, focus);
         const important = attrs.collaborator_count >= 5;
         const zoomAllowsLabel = cameraRatio < 0.55;
         if (!{label_setting} || (!focus && !important && !zoomAllowsLabel)) result.label = "";
-
         if (focus && node !== focus && !isNeighbor) {{
           result.color = "#1d293b";
           result.labelColor = "#475569";
@@ -322,7 +307,6 @@ def build_sigma_html(
           result.forceLabel = true;
           result.zIndex = 4;
         }} else if (isNeighbor) {{
-          result.color = attrs.base_color || "#93c5fd";
           result.size = Math.max(2.4, Math.min(5.8, attrs.size));
           result.forceLabel = true;
           result.zIndex = 3;
@@ -338,7 +322,6 @@ def build_sigma_html(
             result.color = "#172033";
             result.size = Math.max(0.35, attrs.size * 0.45);
           }} else {{
-            result.color = attrs.color;
             result.size = Math.max(1.0, Math.min(3.8, attrs.size * 1.15));
             result.zIndex = 4;
           }}
@@ -347,51 +330,51 @@ def build_sigma_html(
       }},
     }});
 
-    renderer.getCamera().on("updated", state => {{
-      cameraRatio = state.ratio;
-      renderer.refresh();
-    }});
+    renderer.getCamera().on("updated", state => {{ cameraRatio = state.ratio; renderer.refresh(); }});
 
     function topCollaboratorRows(items) {{
-      if (!items || !items.length) return '<span class="muted">Belum ada collaborator.</span>';
+      if (!items || !items.length) return '<span class="muted">Belum ada collaborator evidence.</span>';
       return items.slice(0,5).map(item => {{
-        const match = String(item).match(/^(.*) \((\d+) task\)$/);
+        const match = String(item).match(/^(.*) \((\d+) (?:task|evidence)\)$/);
         if (!match) return `<div class="list-row"><span>${{item}}</span></div>`;
-        return `<div class="list-row"><span>${{match[1]}}</span><b>${{match[2]}} task</b></div>`;
+        return `<div class="list-row"><span>${{match[1]}}</span><b>${{match[2]}} evidence</b></div>`;
       }}).join("");
     }}
 
     function nodeDetail(node) {{
       const a = graph.getNodeAttributes(node);
       const tasks = (a.top_tasks || []).slice(0,5).map(x => `<span class="pill">${{x}}</span>`).join("");
-      detail.innerHTML = `<div class="detail-grid"><div class="summary-card"><div class="title">${{a.label}}</div><div class="summary-grid"><div class="metric"><b>${{a.collaborator_count}}</b><span class="muted">Collaborators</span></div><div class="metric"><b>${{a.collaborative_task_count}}</b><span class="muted">Shared tasks</span></div><div class="metric"><b>${{a.project_count}}</b><span class="muted">Projects</span></div><div class="metric"><b>${{Number(a.collaborative_hours).toFixed(1)}}</b><span class="muted">Hours</span></div></div></div><div class="detail-scroll"><div class="section-title">Top Collaborators</div>${{topCollaboratorRows(a.top_collaborators)}}<div class="section-title" style="margin-top:9px">Dominant Tasks</div>${{tasks || '<span class="muted">Belum ada task dominan.</span>'}}</div></div>`;
+      detail.innerHTML = `<div class="detail-grid"><div class="summary-card"><div class="title">${{a.label}}</div><div class="summary-grid"><div class="metric"><b>${{a.collaborator_count}}</b><span class="muted">Collaborators</span></div><div class="metric"><b>${{a.collaborative_task_count}}</b><span class="muted">Note evidence</span></div><div class="metric"><b>${{a.project_count}}</b><span class="muted">Projects</span></div><div class="metric"><b>${{Number(a.collaborative_hours).toFixed(1)}}</b><span class="muted">Related hours</span></div></div></div><div class="detail-scroll"><div class="section-title">Top Collaborators</div>${{topCollaboratorRows(a.top_collaborators)}}<div class="section-title" style="margin-top:9px">Task Context</div>${{tasks || '<span class="muted">Belum ada task context.</span>'}}</div></div>`;
     }}
 
     function showNodeInfo(node) {{
       const a = graph.getNodeAttributes(node);
       infoPanel.style.display = "block";
-      infoPanel.innerHTML = `<div class="title">${{a.label}}</div><b>${{a.collaborator_count}}</b> collaborator · <b>${{a.collaborative_task_count}}</b> shared task · <b>${{Number(a.collaborative_hours).toFixed(2)}}</b> jam<br><span class="muted">Top:</span> ${{(a.top_collaborators || []).slice(0,3).join(", ") || "-"}}`;
+      infoPanel.innerHTML = `<div class="title">${{a.label}}</div><b>${{a.collaborator_count}}</b> collaborator · <b>${{a.collaborative_task_count}}</b> Note evidence · <b>${{Number(a.collaborative_hours).toFixed(2)}}</b> related hours`;
     }}
 
     function showEdgeInfo(edge) {{
       const a = graph.getEdgeAttributes(edge);
       infoPanel.style.display = "block";
-      infoPanel.innerHTML = `<div class="title">${{a.source}} ↔ ${{a.target}}</div><b>${{a.collaboration_count}} task bersama</b><br><span class="muted">Jam terkait:</span> ${{Number(a.related_hours).toFixed(2)}}<br><span class="muted">Task:</span> ${{(a.shared_tasks || []).join(", ") || "-"}}<br><span class="muted">Project:</span> ${{(a.projects || []).join(", ") || "-"}}`;
+      infoPanel.innerHTML = `<div class="title">${{a.source}} ↔ ${{a.target}}</div><b>${{a.collaboration_count}} evidence Note</b><br><span class="muted">A → B:</span> ${{a.a_to_b_count}} · <span class="muted">B → A:</span> ${{a.b_to_a_count}}<br><span class="muted">Jam terkait:</span> ${{Number(a.related_hours).toFixed(2)}}<br><span class="muted">Task context:</span> ${{(a.tasks || []).join(", ") || "-"}}<br><span class="muted">Project:</span> ${{(a.projects || []).join(", ") || "-"}}`;
     }}
 
     function focusNode(node, navigate=false) {{
       selectedNode = node || null;
       if (!node) {{
         search.value = "";
-        detail.innerHTML = '<span class="muted">Klik node untuk melihat relasi utama. Gunakan scroll untuk zoom jauh dan drag untuk eksplorasi.</span>';
+        detail.innerHTML = '<span class="muted">Klik node untuk melihat evidence relasi utama. Gunakan scroll untuk zoom jauh dan drag untuk eksplorasi.</span>';
         renderer.refresh();
         return;
       }}
       search.value = node;
       nodeDetail(node);
       if (navigate) {{
-        const attrs = graph.getNodeAttributes(node);
-        renderer.getCamera().animate({{x: attrs.x, y: attrs.y, ratio: 0.18}}, {{duration: 360}});
+        // Sigma camera uses framed/display coordinates, not raw NetworkX graph coordinates.
+        const position = renderer.getNodeDisplayData(node);
+        if (position) {{
+          renderer.getCamera().animate({{x: position.x, y: position.y, ratio: 0.28}}, {{duration: 360}});
+        }}
       }}
       renderer.refresh();
     }}
@@ -420,14 +403,12 @@ def build_sigma_html(
     isolateButton.addEventListener("click", () => {{
       hideIsolated = !hideIsolated;
       isolateButton.textContent = hideIsolated ? "Show Isolated" : "Hide Isolated";
-      isolateButton.classList.toggle("active", hideIsolated);
       renderer.refresh();
     }});
     resetButton.addEventListener("click", () => {{
       focusNode(null);
       hideIsolated = false;
       isolateButton.textContent = "Hide Isolated";
-      isolateButton.classList.remove("active");
       renderer.getCamera().animatedReset({{duration:360}});
       renderer.refresh();
     }});

@@ -29,6 +29,7 @@ modules:
       - src/graph/builder.py
       - src/graph/collaboration.py
       - src/graph/collaboration_mentions.py
+      - src/graph/note_collaboration.py
       - src/graph/collaboration_visualizer.py
       - src/graph/sigma_renderer.py
       - src/graph/visualizer.py
@@ -36,6 +37,7 @@ modules:
     tests:
       - tests/test_collaboration_graph.py
       - tests/test_collaboration_mentions.py
+      - tests/test_note_collaboration.py
       - tests/test_graph_builder.py
       - tests/test_graph_visualizer.py
       - tests/test_sigma_renderer.py
