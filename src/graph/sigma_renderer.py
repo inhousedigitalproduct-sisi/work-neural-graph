@@ -25,7 +25,7 @@ COLLABORATION_LOW_COLOR = (71, 85, 105)
 COLLABORATION_HIGH_COLOR = (251, 146, 60)
 
 
-def _sqrt_scaled(values: pd.Series, minimum: float = 3.8, maximum: float = 9.5) -> dict[str, float]:
+def _sqrt_scaled(values: pd.Series, minimum: float = 2.2, maximum: float = 5.8) -> dict[str, float]:
     numeric = pd.to_numeric(values, errors="coerce").fillna(0.0).clip(lower=0.0)
     if numeric.empty:
         return {}
@@ -41,7 +41,7 @@ def _sqrt_scaled(values: pd.Series, minimum: float = 3.8, maximum: float = 9.5) 
     }
 
 
-def _linear_scaled(values: pd.Series, minimum: float = 0.7, maximum: float = 3.5) -> dict[str, float]:
+def _linear_scaled(values: pd.Series, minimum: float = 0.75, maximum: float = 3.2) -> dict[str, float]:
     numeric = pd.to_numeric(values, errors="coerce").fillna(0.0)
     if numeric.empty:
         return {}
@@ -105,19 +105,19 @@ def build_sigma_html(
     edge_width_metric: str,
     show_labels: bool,
 ) -> str:
-    """Build an interactive Sigma.js employee-collaboration view."""
+    """Build a lightweight exploration-first Sigma.js collaboration view."""
     if node_dataframe.empty:
         return "<div style='padding:24px;color:#94a3b8'>Tidak ada node untuk ditampilkan.</div>"
 
     n_nodes = max(graph.number_of_nodes(), 1)
-    k = max(0.30, min(1.05, 3.4 / math.sqrt(n_nodes)))
+    k = max(0.34, min(1.15, 3.8 / math.sqrt(n_nodes)))
     positions = nx.spring_layout(
         graph,
         seed=42,
         weight="shared_task_count",
         k=k,
         iterations=220,
-        scale=1.35,
+        scale=1.55,
     )
 
     node_sizes = _sqrt_scaled(node_dataframe[node_size_metric])
@@ -149,7 +149,7 @@ def build_sigma_html(
                 "label": employee,
                 "x": float(x),
                 "y": float(y),
-                "size": float(node_sizes.get(str(index), 6.0)),
+                "size": float(node_sizes.get(str(index), 3.5)),
                 "base_color": community_color,
                 "color": community_color,
                 "community": community,
@@ -204,41 +204,35 @@ def build_sigma_html(
   <meta charset="utf-8" />
   <style>
     html, body {{ margin:0; padding:0; background:#020617; color:#e2e8f0; font-family:Inter,system-ui,-apple-system,sans-serif; overflow:hidden; }}
-    .toolbar {{ height:58px; display:flex; align-items:center; gap:8px; padding:0 12px; border:1px solid #1e293b; border-bottom:0; border-radius:12px 12px 0 0; background:#0f172a; box-sizing:border-box; }}
-    .toolbar select, .toolbar button {{ height:34px; border-radius:8px; border:1px solid #334155; background:#111827; color:#e2e8f0; padding:0 10px; }}
-    .toolbar select {{ min-width:250px; flex:1; }}
+    .toolbar {{ height:52px; display:flex; align-items:center; gap:8px; padding:0 10px; border:1px solid #1e293b; border-bottom:0; border-radius:10px 10px 0 0; background:#0f172a; box-sizing:border-box; }}
+    .toolbar select, .toolbar button {{ height:32px; border-radius:7px; border:1px solid #334155; background:#111827; color:#e2e8f0; padding:0 9px; }}
+    .toolbar select {{ min-width:240px; flex:1; }}
     .toolbar button {{ cursor:pointer; white-space:nowrap; }}
     .toolbar button.active {{ border-color:#60a5fa; background:#172554; color:#dbeafe; }}
-    .toolbar .hint {{ color:#64748b; font-size:11px; white-space:nowrap; }}
-    #stage {{ height:500px; position:relative; border:1px solid #1e293b; background:radial-gradient(circle at center,#0f172a 0,#020617 72%); box-sizing:border-box; }}
+    .toolbar .hint {{ color:#64748b; font-size:10px; white-space:nowrap; }}
+    #stage {{ height:560px; position:relative; border:1px solid #1e293b; background:#020617; box-sizing:border-box; }}
     #sigma-container {{ position:absolute; inset:0; }}
-    #info-panel {{ position:absolute; display:none; z-index:9; right:14px; top:14px; width:310px; max-height:190px; overflow:auto; padding:11px 13px; border:1px solid #334155; border-radius:10px; background:rgba(15,23,42,.96); box-shadow:0 10px 35px rgba(0,0,0,.35); font-size:12px; line-height:1.45; }}
-    #legend {{ position:absolute; left:14px; bottom:14px; z-index:7; width:260px; padding:13px; border:1px solid rgba(71,85,105,.75); border-radius:14px; background:linear-gradient(180deg,rgba(15,23,42,.97),rgba(8,15,30,.93)); box-shadow:0 16px 38px rgba(0,0,0,.32); backdrop-filter:blur(8px); }}
-    .legend-title {{ color:#f8fafc; font-size:12px; font-weight:800; letter-spacing:.02em; }}
-    .legend-subtitle {{ color:#94a3b8; font-size:10px; margin-top:3px; line-height:1.35; }}
-    .scale-bar {{ height:12px; border-radius:999px; margin:12px 0 6px; border:1px solid rgba(255,255,255,.14); }}
-    .scale-labels {{ display:flex; align-items:center; justify-content:space-between; color:#e2e8f0; font-size:10px; font-weight:700; }}
-    .scale-hints {{ display:flex; align-items:center; justify-content:space-between; color:#64748b; font-size:9px; margin-top:2px; }}
-    .legend-note {{ color:#64748b; font-size:9px; margin-top:10px; padding-top:8px; border-top:1px solid rgba(71,85,105,.45); }}
-    #detail {{ height:270px; padding:14px; border:1px solid #1e293b; border-top:0; border-radius:0 0 12px 12px; background:#0f172a; font-size:13px; line-height:1.5; box-sizing:border-box; overflow:hidden; }}
-    .detail-grid {{ display:grid; grid-template-columns:minmax(220px,.8fr) minmax(320px,1.2fr); gap:18px; height:100%; }}
-    .summary-card {{ border:1px solid #243244; border-radius:10px; padding:12px; background:#111827; height:100%; box-sizing:border-box; overflow:hidden; }}
-    .summary-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin-top:10px; }}
-    .metric {{ border:1px solid #253247; border-radius:8px; padding:8px; background:#0b1220; }}
-    .metric b {{ display:block; font-size:17px; color:#f8fafc; }}
+    #info-panel {{ position:absolute; display:none; z-index:9; right:12px; top:12px; width:300px; max-height:180px; overflow:auto; padding:10px 12px; border:1px solid #334155; border-radius:9px; background:rgba(15,23,42,.96); font-size:12px; line-height:1.45; }}
+    #legend {{ position:absolute; left:12px; bottom:12px; z-index:7; width:238px; padding:10px 11px; border:1px solid rgba(71,85,105,.72); border-radius:11px; background:rgba(15,23,42,.92); }}
+    .legend-title {{ color:#f8fafc; font-size:11px; font-weight:800; }}
+    .legend-subtitle {{ color:#94a3b8; font-size:9px; margin-top:2px; line-height:1.3; }}
+    .scale-bar {{ height:8px; border-radius:999px; margin:9px 0 5px; border:1px solid rgba(255,255,255,.12); }}
+    .scale-labels {{ display:flex; justify-content:space-between; color:#cbd5e1; font-size:9px; font-weight:700; }}
+    .legend-note {{ color:#64748b; font-size:9px; margin-top:7px; }}
+    #detail {{ height:190px; padding:12px; border:1px solid #1e293b; border-top:0; border-radius:0 0 10px 10px; background:#0f172a; font-size:12px; line-height:1.45; box-sizing:border-box; overflow:hidden; }}
+    .detail-grid {{ display:grid; grid-template-columns:minmax(210px,.8fr) minmax(300px,1.2fr); gap:14px; height:100%; }}
+    .summary-card {{ border:1px solid #243244; border-radius:8px; padding:10px; background:#111827; height:100%; box-sizing:border-box; overflow:hidden; }}
+    .summary-grid {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:6px; margin-top:8px; }}
+    .metric {{ border:1px solid #253247; border-radius:7px; padding:6px; background:#0b1220; }}
+    .metric b {{ display:block; font-size:14px; color:#f8fafc; }}
     .muted {{ color:#94a3b8; }}
-    .title {{ color:#f8fafc; font-size:15px; font-weight:700; margin-bottom:4px; }}
-    .section-title {{ color:#cbd5e1; font-weight:700; margin-bottom:6px; }}
-    .detail-scroll {{ min-height:0; height:100%; overflow-y:auto; padding-right:6px; }}
-    .list-row {{ display:flex; justify-content:space-between; gap:12px; padding:5px 0; border-bottom:1px solid rgba(51,65,85,.45); }}
-    .list-row:last-child {{ border-bottom:0; }}
-    .pill {{ display:inline-block; margin:4px 4px 0 0; padding:2px 7px; border:1px solid #334155; border-radius:999px; color:#cbd5e1; font-size:11px; }}
-    @media(max-width:900px) {{ .toolbar .hint {{ display:none; }} #legend {{ width:220px; }} }}
-    @media(max-width:760px) {{
-      #stage {{ height:430px; }} #detail {{ height:335px; overflow-y:auto; }}
-      .detail-grid {{ grid-template-columns:1fr; height:auto; }} .summary-card {{ height:auto; }} .detail-scroll {{ height:auto; overflow:visible; }}
-      #info-panel {{ width:250px; }} #legend {{ width:190px; }}
-    }}
+    .title {{ color:#f8fafc; font-size:14px; font-weight:700; margin-bottom:3px; }}
+    .section-title {{ color:#cbd5e1; font-weight:700; margin-bottom:5px; }}
+    .detail-scroll {{ min-height:0; height:100%; overflow-y:auto; padding-right:4px; }}
+    .list-row {{ display:flex; justify-content:space-between; gap:10px; padding:4px 0; border-bottom:1px solid rgba(51,65,85,.4); }}
+    .pill {{ display:inline-block; margin:3px 3px 0 0; padding:2px 6px; border:1px solid #334155; border-radius:999px; color:#cbd5e1; font-size:10px; }}
+    @media(max-width:900px) {{ .toolbar .hint {{ display:none; }} #legend {{ width:210px; }} }}
+    @media(max-width:760px) {{ #stage {{ height:470px; }} #detail {{ height:250px; overflow-y:auto; }} .detail-grid {{ grid-template-columns:1fr; height:auto; }} .summary-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} #info-panel {{ width:240px; }} #legend {{ width:180px; }} }}
   </style>
 </head>
 <body>
@@ -247,14 +241,14 @@ def build_sigma_html(
     <button id="fit">Fit Graph</button>
     <button id="isolate">Hide Isolated</button>
     <button id="reset">Reset View</button>
-    <span class="hint">hover quick info · click focus · drag · scroll zoom</span>
+    <span class="hint">hover · click focus · drag · scroll zoom</span>
   </div>
   <div id="stage">
     <div id="sigma-container"></div>
     <div id="info-panel"></div>
     <div id="legend"></div>
   </div>
-  <div id="detail"><span class="muted">Klik node untuk Focus Mode. Hover node/garis untuk quick insight tanpa menutupi network.</span></div>
+  <div id="detail"><span class="muted">Klik node untuk melihat relasi utama. Gunakan scroll untuk zoom jauh dan drag untuk eksplorasi.</span></div>
 
   <script type="module">
     import Graph from "https://cdn.jsdelivr.net/npm/graphology@0.26.0/+esm";
@@ -275,14 +269,11 @@ def build_sigma_html(
     const resetButton = document.getElementById("reset");
 
     const scale = data.collaboration_scale || {{min:0, max:0, low_color:"#475569", high_color:"#fb923c"}};
-    const lowLabel = `${{scale.min}} task`;
-    const highLabel = `${{scale.max}} task`;
     legend.innerHTML = `<div class="legend-title">Frekuensi kolaborasi</div>` +
-      `<div class="legend-subtitle">Warna & ketebalan garis = jumlah task bersama antar-karyawan</div>` +
+      `<div class="legend-subtitle">Warna & ketebalan garis = jumlah task bersama</div>` +
       `<div class="scale-bar" style="background:linear-gradient(90deg,${{scale.low_color}},${{scale.high_color}})"></div>` +
-      `<div class="scale-labels"><span>${{lowLabel}}</span><span>${{highLabel}}</span></div>` +
-      `<div class="scale-hints"><span>Sedikit</span><span>Banyak</span></div>` +
-      `<div class="legend-note">Warna node menunjukkan community/cluster kolaborasi.</div>`;
+      `<div class="scale-labels"><span>${{scale.min}} task</span><span>${{scale.max}} task</span></div>` +
+      `<div class="legend-note">Warna node = community/cluster kolaborasi.</div>`;
 
     data.nodes.slice().sort((a,b) => a.label.localeCompare(b.label)).forEach(n => {{
       const option = document.createElement("option");
@@ -301,14 +292,14 @@ def build_sigma_html(
     const renderer = new Sigma(graph, container, {{
       renderLabels: {label_setting},
       labelColor: {{attribute: "labelColor", color: "#e2e8f0"}},
-      labelSize: 12,
-      labelDensity: 0.55,
-      labelGridCellSize: 86,
+      labelSize: 11,
+      labelDensity: 0.46,
+      labelGridCellSize: 72,
       defaultNodeColor: "#60a5fa",
       defaultEdgeColor: "#526175",
       enableEdgeEvents: true,
-      minCameraRatio: 0.035,
-      maxCameraRatio: 6,
+      minCameraRatio: 0.004,
+      maxCameraRatio: 10,
       nodeReducer: (node, attrs) => {{
         const result = {{...attrs, color: attrs.base_color || attrs.color, labelColor: "#e2e8f0"}};
         if (hideIsolated && attrs.isolated) {{ result.hidden = true; return result; }}
@@ -316,23 +307,23 @@ def build_sigma_html(
         const focus = selectedNode || hoveredNode;
         const isNeighbor = focus && graph.areNeighbors(node, focus);
         const important = attrs.collaborator_count >= 5;
-        const zoomAllowsLabel = cameraRatio < 0.7;
+        const zoomAllowsLabel = cameraRatio < 0.55;
         if (!{label_setting} || (!focus && !important && !zoomAllowsLabel)) result.label = "";
 
         if (focus && node !== focus && !isNeighbor) {{
-          result.color = "#172033";
-          result.labelColor = "#42536a";
-          result.size = Math.max(2.8, attrs.size * 0.62);
+          result.color = "#1d293b";
+          result.labelColor = "#475569";
+          result.size = Math.max(1.7, attrs.size * 0.84);
           result.zIndex = 0;
         }} else if (node === focus) {{
           result.color = "#fbbf24";
           result.labelColor = "#f8fafc";
-          result.size = Math.max(5.5, Math.min(9.8, attrs.size * 0.88));
+          result.size = Math.max(3.0, Math.min(6.2, attrs.size * 1.05));
           result.forceLabel = true;
           result.zIndex = 4;
         }} else if (isNeighbor) {{
           result.color = attrs.base_color || "#93c5fd";
-          result.size = Math.max(4.0, Math.min(8.5, attrs.size * 0.78));
+          result.size = Math.max(2.4, Math.min(5.8, attrs.size));
           result.forceLabel = true;
           result.zIndex = 3;
         }}
@@ -344,11 +335,11 @@ def build_sigma_html(
         if (focus) {{
           const ends = graph.extremities(edge);
           if (!ends.includes(focus)) {{
-            result.color = "#131c2d";
-            result.size = Math.max(0.22, attrs.size * 0.24);
+            result.color = "#172033";
+            result.size = Math.max(0.35, attrs.size * 0.45);
           }} else {{
             result.color = attrs.color;
-            result.size = Math.max(1.5, Math.min(5.5, attrs.size * 1.75));
+            result.size = Math.max(1.0, Math.min(3.8, attrs.size * 1.15));
             result.zIndex = 4;
           }}
         }}
@@ -373,26 +364,26 @@ def build_sigma_html(
     function nodeDetail(node) {{
       const a = graph.getNodeAttributes(node);
       const tasks = (a.top_tasks || []).slice(0,5).map(x => `<span class="pill">${{x}}</span>`).join("");
-      detail.innerHTML = `<div class="detail-grid"><div class="summary-card"><div class="title">${{a.label}}</div><div class="muted">Focus Mode</div><div class="summary-grid"><div class="metric"><b>${{a.collaborator_count}}</b><span class="muted">Collaborators</span></div><div class="metric"><b>${{a.collaborative_task_count}}</b><span class="muted">Shared tasks</span></div><div class="metric"><b>${{a.project_count}}</b><span class="muted">Projects</span></div><div class="metric"><b>${{Number(a.collaborative_hours).toFixed(2)}}</b><span class="muted">Collaborative hours</span></div></div></div><div class="detail-scroll"><div class="section-title">Top Collaborators</div>${{topCollaboratorRows(a.top_collaborators)}}<div class="section-title" style="margin-top:12px">Dominant Tasks</div>${{tasks || '<span class="muted">Belum ada task dominan.</span>'}}</div></div>`;
+      detail.innerHTML = `<div class="detail-grid"><div class="summary-card"><div class="title">${{a.label}}</div><div class="summary-grid"><div class="metric"><b>${{a.collaborator_count}}</b><span class="muted">Collaborators</span></div><div class="metric"><b>${{a.collaborative_task_count}}</b><span class="muted">Shared tasks</span></div><div class="metric"><b>${{a.project_count}}</b><span class="muted">Projects</span></div><div class="metric"><b>${{Number(a.collaborative_hours).toFixed(1)}}</b><span class="muted">Hours</span></div></div></div><div class="detail-scroll"><div class="section-title">Top Collaborators</div>${{topCollaboratorRows(a.top_collaborators)}}<div class="section-title" style="margin-top:9px">Dominant Tasks</div>${{tasks || '<span class="muted">Belum ada task dominan.</span>'}}</div></div>`;
     }}
 
     function showNodeInfo(node) {{
       const a = graph.getNodeAttributes(node);
       infoPanel.style.display = "block";
-      infoPanel.innerHTML = `<div class="title">${{a.label}}</div><b>${{a.collaborator_count}}</b> collaborator · <b>${{a.collaborative_task_count}}</b> shared task · <b>${{Number(a.collaborative_hours).toFixed(2)}}</b> jam<br><span class="muted">Top:</span> ${{(a.top_collaborators || []).slice(0,3).join(", ") || "-"}}<br><span class="muted">${{a.community ? `Community ${{a.community}}` : "Isolated"}}</span>`;
+      infoPanel.innerHTML = `<div class="title">${{a.label}}</div><b>${{a.collaborator_count}}</b> collaborator · <b>${{a.collaborative_task_count}}</b> shared task · <b>${{Number(a.collaborative_hours).toFixed(2)}}</b> jam<br><span class="muted">Top:</span> ${{(a.top_collaborators || []).slice(0,3).join(", ") || "-"}}`;
     }}
 
     function showEdgeInfo(edge) {{
       const a = graph.getEdgeAttributes(edge);
       infoPanel.style.display = "block";
-      infoPanel.innerHTML = `<div class="title">${{a.source}} ↔ ${{a.target}}</div><b>Frekuensi kolaborasi: ${{a.collaboration_count}} task bersama</b><br><span class="muted">Total jam terkait:</span> ${{Number(a.related_hours).toFixed(2)}} jam<br><span class="muted">Task:</span> ${{(a.shared_tasks || []).join(", ") || "-"}}<br><span class="muted">Project:</span> ${{(a.projects || []).join(", ") || "-"}}`;
+      infoPanel.innerHTML = `<div class="title">${{a.source}} ↔ ${{a.target}}</div><b>${{a.collaboration_count}} task bersama</b><br><span class="muted">Jam terkait:</span> ${{Number(a.related_hours).toFixed(2)}}<br><span class="muted">Task:</span> ${{(a.shared_tasks || []).join(", ") || "-"}}<br><span class="muted">Project:</span> ${{(a.projects || []).join(", ") || "-"}}`;
     }}
 
     function focusNode(node, navigate=false) {{
       selectedNode = node || null;
       if (!node) {{
         search.value = "";
-        detail.innerHTML = '<span class="muted">Klik node untuk Focus Mode. Hover node/garis untuk quick insight tanpa menutupi network.</span>';
+        detail.innerHTML = '<span class="muted">Klik node untuk melihat relasi utama. Gunakan scroll untuk zoom jauh dan drag untuk eksplorasi.</span>';
         renderer.refresh();
         return;
       }}
@@ -400,7 +391,7 @@ def build_sigma_html(
       nodeDetail(node);
       if (navigate) {{
         const attrs = graph.getNodeAttributes(node);
-        renderer.getCamera().animate({{x: attrs.x, y: attrs.y, ratio: 0.48}}, {{duration: 420}});
+        renderer.getCamera().animate({{x: attrs.x, y: attrs.y, ratio: 0.18}}, {{duration: 360}});
       }}
       renderer.refresh();
     }}
@@ -412,11 +403,7 @@ def build_sigma_html(
     renderer.on("enterEdge", ({{edge}}) => showEdgeInfo(edge));
     renderer.on("leaveEdge", () => {{ infoPanel.style.display = "none"; }});
 
-    renderer.on("downNode", ({{node}}) => {{
-      isDragging = true;
-      draggedNode = node;
-      renderer.getCamera().disable();
-    }});
+    renderer.on("downNode", ({{node}}) => {{ isDragging = true; draggedNode = node; renderer.getCamera().disable(); }});
     renderer.getMouseCaptor().on("mousemovebody", event => {{
       if (!isDragging || !draggedNode) return;
       const pos = renderer.viewportToGraph(event);
@@ -426,14 +413,10 @@ def build_sigma_html(
       event.original?.preventDefault?.();
       event.original?.stopPropagation?.();
     }});
-    renderer.getMouseCaptor().on("mouseup", () => {{
-      isDragging = false;
-      draggedNode = null;
-      renderer.getCamera().enable();
-    }});
+    renderer.getMouseCaptor().on("mouseup", () => {{ isDragging = false; draggedNode = null; renderer.getCamera().enable(); }});
 
     search.addEventListener("change", () => focusNode(search.value || null, true));
-    fitButton.addEventListener("click", () => renderer.getCamera().animatedReset({{duration:420}}));
+    fitButton.addEventListener("click", () => renderer.getCamera().animatedReset({{duration:360}}));
     isolateButton.addEventListener("click", () => {{
       hideIsolated = !hideIsolated;
       isolateButton.textContent = hideIsolated ? "Show Isolated" : "Hide Isolated";
@@ -445,7 +428,7 @@ def build_sigma_html(
       hideIsolated = false;
       isolateButton.textContent = "Hide Isolated";
       isolateButton.classList.remove("active");
-      renderer.getCamera().animatedReset({{duration:420}});
+      renderer.getCamera().animatedReset({{duration:360}});
       renderer.refresh();
     }});
   </script>

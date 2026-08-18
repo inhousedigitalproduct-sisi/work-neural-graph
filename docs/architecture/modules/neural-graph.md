@@ -2,12 +2,14 @@
 
 ## Purpose
 
-Neural Graph memvisualisasikan dua jenis evidence kolaborasi yang sengaja dipisahkan:
+Neural Graph adalah network explorer untuk membaca pola kolaborasi antar-karyawan berdasarkan `task_key` yang sama. Desain runtime sekarang kembali ke prinsip **exploration-first**: ringan, node compact, edge mudah dibaca, dan zoom dapat masuk jauh ke cluster padat.
 
-1. **Shared-task evidence** — edge undirected berarti dua karyawan berbagi `task_key` pada scope project/date aktif. `shared_task_count` tetap menjadi metric frekuensi kolaborasi utama untuk warna dan ketebalan garis.
-2. **Directional acknowledgement evidence** — marker chevron satu arah berarti pemilik timesheet menyebut karyawan lain pada kolom `note` dengan deterministic employee-name matching.
+Dua jenis evidence tetap dipisahkan:
 
-Acknowledgement adalah evidence pola dokumentasi/koordinasi, bukan penilaian performa individu.
+1. **Shared-task evidence** — edge undirected berarti dua karyawan berbagi `task_key` pada scope project/date aktif. `shared_task_count` menjadi metric utama untuk warna dan ketebalan garis.
+2. **Penyebutan kolaborator pada Note** — pemilik timesheet menyebut karyawan lain secara deterministic. Evidence ini tetap dianalisis sebagai tabel/insight, tetapi tidak lagi dianimasikan pada network.
+
+Penyebutan nama adalah evidence pola dokumentasi/koordinasi, bukan penilaian performa individu.
 
 ## Business Flow
 
@@ -17,18 +19,21 @@ Active dataset
  -> apply_graph_filters
  -> filtered timesheet rows
       |-> build_collaboration_graph
-      |     -> shared-task employee nodes + undirected edges
+      |     -> employee nodes + undirected shared-task edges
       |
       |-> extract_collaboration_mentions
             -> deterministic employee alias matching on note
-            -> row-level directional evidence
-            -> aggregated source -> target acknowledgement
+            -> row-level source -> target mention evidence
+            -> aggregated mention pairs
 
-shared edges + directional evidence
- -> acknowledgement insight classification / reciprocity
- -> threshold minimum shared tasks
+shared-task graph
+ -> minimum shared-task threshold
  -> Sigma payload/layout/community
- -> one-way directional chevron overlay on visible shared-task edges
+ -> lightweight interactive exploration
+
+mention evidence
+ -> reciprocity / mutual / one-sided / silent / mention-only analysis
+ -> table below graph
 ```
 
 ## Entry Points and Dependencies
@@ -36,10 +41,9 @@ shared edges + directional evidence
 - Entry point: `pages/2_Neural_Graph.py`.
 - Filtering contract: `src/graph/builder.py::GraphFilterConfig/apply_graph_filters`.
 - Shared-task collaboration model: `src/graph/collaboration.py`.
-- Directional extraction: `src/graph/collaboration_mentions.py`.
+- Mention extraction: `src/graph/collaboration_mentions.py`.
 - Manual nickname/alias config: `config/employee_aliases.json`.
 - Main renderer: `src/graph/sigma_renderer.py`.
-- Lightweight directional animation helper: `src/graph/pinball_animation.py`.
 - Dataset: `TimesheetDataService`.
 - Analytics summary: `AnalyticsService`.
 - Runtime browser dependencies: Graphology + Sigma.js dari CDN.
@@ -48,66 +52,48 @@ shared edges + directional evidence
 
 - Source selalu nilai `employee` dari row timesheet.
 - Target hanya boleh employee lain dari canonical employee roster aktif yang ditemukan di `note`.
-- `note` adalah source text v1; `summary` tidak digunakan untuk directional acknowledgement agar semantic tetap eksplisit.
+- `note` adalah source text v1; `summary` tidak digunakan untuk mention evidence agar semantic tetap eksplisit.
 - Matching deterministic: full canonical name `1.00`, manual alias `0.98`, unique two-word alias `0.95`, unique automatic single-token alias `0.92`.
-- Threshold default adalah **0.90**. Single-token name boleh menghasilkan evidence hanya jika token tersebut dimiliki tepat satu employee pada canonical roster. Jika token yang sama dimiliki lebih dari satu employee, alias dianggap ambiguous dan dibuang.
-- Manual alias tetap digunakan untuk nickname yang tidak berasal dari token canonical employee name.
+- Threshold default adalah **0.90**. Single-token name hanya boleh menghasilkan evidence jika token tersebut dimiliki tepat satu employee pada canonical roster.
+- Alias yang dimiliki lebih dari satu employee dianggap ambiguous dan dibuang.
 - Self-mention diabaikan.
-- Satu target dihitung maksimum satu kali per `entry_id`, walaupun nama target muncul berulang di Note yang sama.
-- Evidence row menyimpan source, target, entry id, date, task, project, matched alias, confidence, context pendek, dan note hash agar hasil dapat diaudit.
-- Extraction tidak menggunakan LLM. LLM dapat menjadi enrichment terpisah di masa depan untuk mengklasifikasikan jenis interaksi, bukan menentukan identitas employee.
+- Satu target dihitung maksimum satu kali per `entry_id`, walaupun namanya muncul berulang pada Note yang sama.
+- Evidence row tetap audit-friendly: source, target, entry id, date, task, project, matched alias, confidence, context, dan note hash.
+- Extraction tidak menggunakan LLM.
 
-## Extraction Diagnostics Contract
+## Mention Insight Contract
 
-UI menampilkan counter ringan untuk membantu membedakan masalah extraction dengan masalah renderer:
+Pair insight menggabungkan shared-task edge dengan dua arah mention yang mungkin:
 
-- `notes_scanned`: jumlah Note non-empty pada scope aktif.
-- `notes_with_accepted_evidence`: jumlah timesheet entry yang menghasilkan minimal satu target valid.
-- `notes_without_accepted_evidence`: Note non-empty yang tidak menghasilkan target valid; ini dapat berarti Note tidak menyebut employee lain atau candidate name tidak lolos matching.
-- `accepted_evidence`: jumlah source-target evidence setelah dedupe per entry.
-- `directional_pairs`: jumlah arah acknowledgement teragregasi.
-- `visible_signals`: jumlah directional signal yang juga memiliki shared-task edge pada graph yang sedang tampil.
+- `SHARED_MUTUAL`: shared task ada dan A menyebut B serta B menyebut A.
+- `SHARED_ONE_SIDED`: shared task ada tetapi penyebutan hanya satu arah.
+- `SHARED_SILENT`: shared task ada tanpa penyebutan nama satu sama lain.
+- `MENTION_ONLY`: penyebutan ada tetapi shared task tidak ditemukan pada scope aktif.
 
-Jika shared-task edge ada tetapi `visible_signals = 0`, investigasi dilakukan pada Note/matching/visible-edge join sebelum mengubah canvas renderer.
-
-## Acknowledgement Insight Contract
-
-Pair insight menggabungkan shared-task edge dengan dua kemungkinan arah acknowledgement:
-
-- `SHARED_MUTUAL`: shared task ada dan A -> B serta B -> A sama-sama terdeteksi.
-- `SHARED_ONE_SIDED`: shared task ada tetapi acknowledgement hanya satu arah.
-- `SHARED_SILENT`: shared task ada tanpa acknowledgement pada Note.
-- `MENTION_ONLY`: acknowledgement ada tetapi shared task tidak ditemukan pada scope aktif.
-
-Acknowledgement reciprocity dihitung sebagai:
+Reciprocity dihitung sebagai:
 
 ```text
 2 * min(A_to_B, B_to_A) / (A_to_B + B_to_A)
 ```
 
-Nilai ini mengukur balance acknowledgement pada timesheet, bukan collaboration quality. Asimetri dapat normal karena role coordinator, reviewer, lead, task owner, support, atau pola dokumentasi yang berbeda.
+Metric ini mengukur balance penyebutan nama pada timesheet, bukan collaboration quality.
 
-## Animation Contract
+## Renderer / Exploration Contract
 
-- Marker hanya berasal dari **directional acknowledgement evidence**, bukan dari urutan alfabet edge atau asumsi bahwa shared-task selalu reciprocal.
-- Marker berbentuk **chevron/arrowhead** sehingga arah dapat dibaca dari satu frame tanpa harus menunggu gerak dot.
-- Marker bergerak satu arah dari source ke target, lalu restart dari source. Tidak memantul kembali.
-- Orientasi marker dihitung dari vektor source-target (`atan2`) dan selalu menunjuk ke target.
-- Jika A -> B dan B -> A sama-sama punya evidence, dua signal terpisah dapat bergerak berlawanan pada edge yang sama.
-- Shared-task edge tanpa directional evidence tetap tampil tetapi tanpa marker.
-- `MENTION_ONLY` tetap tersedia pada analysis table tetapi belum dirender sebagai edge, agar semantic garis tetap konsisten sebagai shared task.
-- Saat tidak ada focus, marker memakai warna edge dengan opacity tinggi dan outline putih tipis agar terbaca di background gelap.
-- Saat hover/klik node, marker pada relasi node aktif diperbesar dan diperjelas; marker lain diredupkan agar active path lebih mudah dibaca tanpa menambah glow berat.
-- Tidak memakai streak, gradient, large shadow blur, atau additive glow yang mahal.
-- Maksimum **120 directional signals** dianimasikan, diprioritaskan berdasarkan jumlah timesheet evidence.
-- Frame interval adaptif berdasarkan jumlah signal yang dianimasikan.
-- Posisi viewport node di-cache sekali per frame.
-- Koordinat viewport harus divalidasi (`Number.isFinite`) agar satu signal invalid tidak mematikan animation loop secara diam-diam.
-- Rendering berhenti saat tab browser hidden dan dihormati saat `prefers-reduced-motion` aktif.
+- Runtime graph **tidak memakai animation overlay, canvas particle, pinball, impulse, atau chevron marker**.
+- Node size default dibatasi pada kisaran sekitar **2.2-5.8 px** agar node tidak menutupi jaringan.
+- Edge tetap membawa semantic frekuensi kolaborasi melalui warna dan ketebalan.
+- Layout sedikit lebih renggang agar edge crossing dan cluster lebih mudah dibaca.
+- Sigma camera harus mendukung zoom-in jauh; `minCameraRatio` ditetapkan **0.004** dan `maxCameraRatio` **10**.
+- Search employee, Fit Graph, Hide Isolated, Reset View, hover info, click focus, node drag, pan, dan scroll zoom tetap tersedia.
+- Focus mode tidak boleh membesarkan node secara ekstrem. Node lain cukup diredupkan ringan dan edge yang terkait focus hanya ditegaskan secukupnya.
+- Detail panel dibuat lebih compact daripada versi sebelumnya agar viewport graph menjadi area utama eksplorasi.
+- Label muncul adaptif berdasarkan zoom/focus dan tidak boleh menguasai dense graph.
+- Runtime renderer tidak memiliki `requestAnimationFrame` loop tambahan di luar Sigma.
 
 ## Alias Configuration
 
-`config/employee_aliases.json` berisi object canonical employee -> daftar nickname/alias yang dianggap eksplisit.
+`config/employee_aliases.json` berisi object canonical employee -> daftar nickname/alias tambahan.
 
 Contoh:
 
@@ -118,34 +104,31 @@ Contoh:
 }
 ```
 
-Config baseline boleh kosong (`{}`). Unique canonical single-token matching tidak membutuhkan config; config digunakan untuk nickname tambahan. Alias yang ambiguous terhadap employee lain tetap tidak boleh menghasilkan evidence.
+Config baseline boleh kosong (`{}`). Unique canonical single-token matching tidak membutuhkan config; config digunakan untuk nickname tambahan.
 
 ## Current Risks and Non-standard Code
 
-- `src/graph/visualizer.py` dan `collaboration_visualizer.py` masih hidup bersama Sigma renderer; perlu usage audit agar renderer legacy tidak kembali dipakai tanpa sengaja.
-- Page menggunakan `AnalyticsService` yang saat ini membangun legacy `GraphService/GraphBuilder` untuk analytics snapshot, walaupun visual graph sudah collaboration-based.
-- Sigma HTML adalah large Python f-string berisi CSS/JS, sehingga raw string escaping dan regression risk tinggi.
-- Nama helper/file `pinball_animation.py` adalah legacy naming; semantic visual sekarang directional chevron, sehingga rename dapat dilakukan nanti sebagai refactor terpisah agar perubahan visual ini tetap kecil dan mudah direview.
+- `src/graph/visualizer.py` dan `collaboration_visualizer.py` masih hidup bersama Sigma renderer; perlu usage audit sebelum menghapus renderer legacy.
+- Page menggunakan `AnalyticsService` yang masih membangun legacy `GraphService/GraphBuilder` untuk analytics snapshot.
+- Sigma HTML masih berupa large Python f-string berisi CSS/JS, sehingga escaping dan regression risk tetap tinggi.
 - CDN availability adalah runtime dependency untuk interactive renderer.
-- Note quality dan naming convention menentukan recall extraction. Unique-token matching meningkatkan recall, tetapi ambiguity gate tetap wajib untuk menahan false-positive.
+- Note quality dan naming convention menentukan recall mention extraction.
 
 ## Refactor Recommendations
 
-1. Pertahankan extraction dan animation concern pada helper khusus, bukan di Streamlit page.
-2. Rename `pinball_animation.py` ke nama yang merepresentasikan directional marker setelah import/reference migration dapat dilakukan atomik.
-3. Pisahkan Sigma payload construction dari HTML template agar dapat unit-test secara langsung.
-4. Decouple period KPI dari legacy date graph builder.
-5. Hapus/deprecate renderer yang tidak digunakan setelah repository-wide usage search.
-6. Tambahkan browser-level performance smoke test jika tooling frontend tersedia.
-7. Jika directional extraction sudah stabil, evaluasi enrichment jenis interaksi (review/support/handover/coordination) sebagai layer terpisah.
+1. Pisahkan Sigma payload construction dari HTML template agar renderer dapat diuji lebih granular.
+2. Decouple period KPI dari legacy date graph builder.
+3. Hapus/deprecate renderer yang tidak digunakan setelah repository-wide usage search.
+4. Tambahkan browser-level zoom/pan smoke test jika tooling frontend tersedia.
+5. Jika mention extraction sudah stabil, evaluasi enrichment jenis interaksi (review/support/handover/coordination) sebagai layer analitik terpisah.
 
 ## Tests
 
-Coverage utama: `tests/test_collaboration_graph.py`, `test_graph_builder.py`, `test_graph_visualizer.py`, `test_collaboration_mentions.py`, dan `test_pinball_animation.py`.
+Coverage utama: `tests/test_collaboration_graph.py`, `test_graph_builder.py`, `test_graph_visualizer.py`, `test_collaboration_mentions.py`, dan `test_sigma_renderer.py`.
 
-- `test_collaboration_mentions.py` menguji one-way extraction, dedupe per entry, unique single-token matching, ambiguous-token rejection, manual nickname alias, extraction diagnostics, mutual/one-sided/silent/mention-only classification, reciprocity, dan filtering signal ke visible shared edge.
-- `test_pinball_animation.py` memastikan animation menerima explicit directional signals, bergerak one-way, memakai chevron yang dirotasi ke target, tidak lagi menggambar circle marker, meredupkan marker non-focus, tetap bounded, tanpa heavy gradient/shadow effect, menghormati reduced-motion, dan memiliki invalid viewport coordinate guard.
+- `test_collaboration_mentions.py` menguji extraction, unique single-token matching, ambiguity rejection, manual alias, reciprocity, dan evidence classification.
+- `test_sigma_renderer.py` menguji batas node compact, deep zoom camera range, focus sizing yang ringan, dan memastikan animation overlay lama tidak kembali masuk ke renderer.
 
 ## Change Contract
 
-Setiap perubahan node/edge semantic, filtering, extraction rule, confidence threshold, alias handling, diagnostics, reciprocity metric, renderer encoding, directional animation, visibility, atau performance limit harus meng-update dokumen ini dan relevant tests. Directional evidence harus explainable dari timesheet row; jangan mengubah arah signal berdasarkan heuristic visual yang tidak memiliki evidence data.
+Setiap perubahan node/edge semantic, filtering, mention extraction, confidence threshold, renderer sizing, zoom bounds, focus behavior, visibility, atau performance harus meng-update dokumen ini dan relevant tests. Runtime animation pada graph tidak boleh ditambahkan kembali tanpa evidence dari user testing bahwa animasi tersebut benar-benar meningkatkan pemahaman.

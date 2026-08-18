@@ -9,12 +9,9 @@ from src.graph.builder import GraphFilterConfig, apply_graph_filters
 from src.graph.collaboration import build_collaboration_graph
 from src.graph.collaboration_mentions import (
     build_acknowledgement_insights,
-    build_mention_diagnostics,
-    build_visible_directional_signals,
     extract_collaboration_mentions,
     load_employee_aliases,
 )
-from src.graph.pinball_animation import inject_pinball_effect
 from src.graph.sigma_renderer import build_sigma_html
 from src.services import TimesheetDataService
 from src.ui.components import render_analytics_summary
@@ -160,31 +157,16 @@ for source, target in list(display_graph.edges):
     if not keep:
         display_graph.remove_edge(source, target)
 
-directional_signals = build_visible_directional_signals(mention_result.directional_dataframe, edges)
 acknowledgement_insights = build_acknowledgement_insights(
     result.edge_dataframe,
     mention_result.directional_dataframe,
 )
-mention_diagnostics = build_mention_diagnostics(filtered, mention_result, directional_signals)
 
 st.subheader("Peta kolaborasi interaktif")
 st.caption(
-    "Garis tetap menunjukkan shared task. Marker chevron bergerak mengikuti arah penyebutan pada Note: dari pemilik "
-    "timesheet menuju karyawan yang disebut. Jika kedua pihak saling menyebut, dua marker bergerak berlawanan sebagai "
-    "dua evidence yang berbeda."
+    "Mode eksplorasi ringan: node dibuat compact, relasi tetap menonjol, dan zoom diperdalam untuk membaca jaringan padat. "
+    "Tidak ada animasi impuls/marker pada graph."
 )
-st.caption(
-    f"Extraction diagnostics: {mention_diagnostics['notes_scanned']:,} Note dipindai • "
-    f"{mention_diagnostics['notes_with_accepted_evidence']:,} Note punya evidence • "
-    f"{mention_diagnostics['accepted_evidence']:,} evidence diterima • "
-    f"{mention_diagnostics['directional_pairs']:,} arah acknowledgement • "
-    f"{mention_diagnostics['visible_signals']:,} signal terlihat."
-)
-if mention_diagnostics["visible_signals"] == 0:
-    st.caption(
-        "Jika garis terlihat tetapi signal = 0, Note pada scope aktif belum menghasilkan acknowledgement yang cocok "
-        "dengan shared-task edge yang sedang tampil. Nama satu kata yang unik di roster sekarang diterima; nama ambigu tetap ditolak."
-    )
 if result.summary.collaboration_links == 0:
     st.info("Tidak ada task yang dikerjakan oleh lebih dari satu karyawan pada scope aktif. Node tetap ditampilkan tanpa garis.")
 
@@ -196,26 +178,22 @@ sigma_html = build_sigma_html(
     edge_width_metric="shared_task_count",
     show_labels=show_labels,
 )
-sigma_html = inject_pinball_effect(sigma_html, directional_signals)
 components.html(sigma_html, height=835, scrolling=False)
 
 with st.expander("Cara membaca Collaboration Graph", expanded=False):
     st.markdown(
         """
-- **Node/dot besar = karyawan.**
+- **Node kecil = karyawan.** Ukuran node mengikuti metric yang dipilih di sidebar tetapi dibatasi agar tidak menutupi jaringan.
 - **Garis = dua karyawan mengerjakan `task_key` yang sama** pada Nama Project/Range Date aktif, walaupun tanggal pengerjaannya berbeda.
 - **Warna & ketebalan garis = frekuensi kolaborasi**, dihitung dari jumlah task bersama untuk pasangan karyawan tersebut.
 - **Bar scale** menunjukkan rentang frekuensi kolaborasi dari paling sedikit ke paling banyak pada scope aktif.
-- **Chevron/arrowhead satu arah = penyebutan kolaborator pada Note timesheet.** Source adalah pemilik timesheet; ujung marker menunjuk ke karyawan yang disebut secara deterministic dengan confidence minimal 90%.
-- **Nama satu kata yang unik di seluruh roster** diterima dengan confidence 92%. Jika token yang sama dimiliki lebih dari satu karyawan, alias tersebut dianggap ambigu dan tidak menghasilkan signal.
-- Jika **A menyebut B** tetapi B tidak menyebut A, hanya ada marker **A → B**. Jika keduanya saling menyebut, dua directional marker berjalan berlawanan.
-- Saat **hover/klik node**, marker pada relasi node tersebut dibuat lebih tegas sementara marker lain diredupkan agar jalur aktif lebih mudah dibaca.
+- Gunakan **scroll untuk zoom**, termasuk zoom-in lebih jauh pada cluster padat; drag canvas untuk pan dan drag node untuk merapikan posisi lokal.
+- Klik atau cari karyawan untuk menonjolkan relasi langsung tanpa membesarkan node secara berlebihan.
+- Data penyebutan nama pada Note tetap dianalisis di bagian **Penyebutan Kolaborator (Note)** di bawah graph; data tersebut tidak lagi dianimasikan pada network.
+- **Nama satu kata yang unik di seluruh roster** diterima dengan confidence 92%. Jika token yang sama dimiliki lebih dari satu karyawan, alias tersebut dianggap ambigu.
 - Satu target hanya dihitung **sekali per timesheet entry**, walaupun namanya disebut berulang kali pada Note yang sama.
 - Alias/nickname eksplisit yang tidak berasal dari nama canonical dapat dikonfigurasi di `config/employee_aliases.json`.
-- Animasi dibatasi maksimum **120 directional signal terkuat** dan memakai adaptive frame rate agar tetap ringan pada graph padat.
-- **Mention-only** (ada penyebutan tetapi tidak ada shared task) tetap masuk analisis acknowledgement, tetapi belum divisualisasikan sebagai garis agar semantic garis tetap konsisten.
-- **Ukuran node** dapat diganti dari sidebar.
-- Acknowledgement reciprocity adalah sinyal pola dokumentasi kolaborasi, **bukan penilaian kualitas atau performa individu**.
+- Reciprocity pada penyebutan nama adalah sinyal pola dokumentasi kolaborasi, **bukan penilaian kualitas atau performa individu**.
 """
     )
 
@@ -239,9 +217,12 @@ with st.expander("Relasi kolaborasi", expanded=False):
         table["projects"] = table["projects"].map(lambda values: ", ".join(values))
     st.dataframe(table, use_container_width=True, hide_index=True)
 
-with st.expander("Directional acknowledgement", expanded=False):
+with st.expander("Penyebutan Kolaborator (Note)", expanded=False):
+    st.caption(
+        "Bagian ini memisahkan kolaborasi karena task yang sama dengan penyebutan nama rekan secara eksplisit di Note timesheet."
+    )
     if acknowledgement_insights.empty:
-        st.info("Belum ada shared-task atau acknowledgement evidence pada scope aktif.")
+        st.info("Belum ada shared-task atau evidence penyebutan nama pada scope aktif.")
     else:
         insight_table = acknowledgement_insights.copy()
         insight_table["acknowledgement_reciprocity"] = (
@@ -252,21 +233,21 @@ with st.expander("Directional acknowledgement", expanded=False):
                 "employee_a": "Karyawan A",
                 "employee_b": "Karyawan B",
                 "shared_task_count": "Shared task",
-                "a_to_b_count": "A → B",
-                "b_to_a_count": "B → A",
+                "a_to_b_count": "A menyebut B",
+                "b_to_a_count": "B menyebut A",
                 "acknowledgement_reciprocity": "Reciprocity (%)",
-                "evidence_type": "Evidence type",
+                "evidence_type": "Pola evidence",
             }
         )
         st.dataframe(insight_table, use_container_width=True, hide_index=True)
 
     if not mention_result.directional_dataframe.empty:
-        st.markdown("**Evidence arah dari Note**")
+        st.markdown("**Evidence penyebutan dari Note**")
         direction_table = mention_result.directional_dataframe.copy().rename(
             columns={
-                "source_employee": "Source",
-                "target_employee": "Target",
-                "acknowledgement_entry_count": "Timesheet evidence",
+                "source_employee": "Pemilik timesheet",
+                "target_employee": "Nama yang disebut",
+                "acknowledgement_entry_count": "Jumlah timesheet",
                 "unique_task_count": "Task unik",
                 "unique_project_count": "Project unik",
                 "first_date": "Pertama",
