@@ -95,6 +95,10 @@ Untuk setiap pasangan employee A/B:
 - Search wajib menggunakan `renderer.getNodeDisplayData(node)` sebelum `camera.animate(...)`; raw NetworkX `x/y` tidak boleh dipakai untuk camera focus.
 - Employee terpilih dan neighbor langsung ditegaskan; node lain diredupkan.
 - Fit Graph / Reset View mengembalikan overview.
+- Overview boleh memakai **Idle Motion Lite**: pergeseran sinusoidal sangat kecil dari posisi spring-layout dasar, dibatasi 24 FPS dan tidak menjalankan force/physics simulation ulang.
+- Idle Motion Lite otomatis nonaktif jika graph memiliki lebih dari 250 node atau user mengaktifkan `prefers-reduced-motion`.
+- Motion berhenti saat tab tidak aktif dan dipause selama hover/click focus, drag, pencarian, atau interaksi camera/zoom agar pembacaan evidence tetap stabil.
+- Posisi dasar node disinkronkan setelah drag agar node tidak meloncat kembali ketika idle motion aktif lagi.
 - Embedded JavaScript di Python f-string tidak boleh memakai invalid Python escape sequence. Untuk regex sederhana, gunakan character class seperti `[(]`, `[)]`, `[0-9]` atau escaping Python yang eksplisit.
 - Tidak ada impulse/pinball/chevron animation overlay.
 
@@ -124,8 +128,9 @@ Regression wajib:
 3. threshold evidence rebuild node/summary secara konsisten;
 4. employee search memakai Sigma display coordinates sehingga graph tidak hilang saat focus;
 5. employee search harus mendukung case-insensitive contains matching, bukan hanya full-name/prefix selection;
-6. source `sigma_renderer.py` harus compile tanpa `SyntaxWarning` / `DeprecationWarning` akibat invalid escape sequence.
+6. Idle Motion Lite harus memiliki FPS cap, graph-size guard, reduced-motion guard, hidden-tab guard, dan tidak boleh memakai force simulation kontinu;
+7. source `sigma_renderer.py` harus compile tanpa `SyntaxWarning` / `DeprecationWarning` akibat invalid escape sequence.
 
 ## Change Contract
 
-Setiap perubahan semantic evidence, matching, threshold, graph weight, node metric, camera focus, insight, atau visibility harus meng-update dokumen ini dan relevant tests. Shared-task collaboration tidak boleh kembali menjadi semantic utama tanpa requirement/user validation baru.
+Setiap perubahan semantic evidence, matching, threshold, graph weight, node metric, camera focus, insight, motion, atau visibility harus meng-update dokumen ini dan relevant tests. Shared-task collaboration tidak boleh kembali menjadi semantic utama tanpa requirement/user validation baru.
