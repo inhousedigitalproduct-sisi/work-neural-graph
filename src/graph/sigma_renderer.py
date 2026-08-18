@@ -271,10 +271,12 @@ def build_sigma_html(
 
     let selectedNode = null;
     let hoveredNode = null;
+    let hoveredEdge = null;
     let draggedNode = null;
     let isDragging = false;
     let hideIsolated = false;
     let cameraRatio = 1;
+    let suppressNextStageClick = false;
 
     const renderer = new Sigma(graph, container, {{
       renderLabels: {label_setting},
@@ -359,16 +361,25 @@ def build_sigma_html(
       infoPanel.innerHTML = `<div class="title">${{a.source}} ↔ ${{a.target}}</div><b>${{a.collaboration_count}} evidence Note</b><br><span class="muted">A → B:</span> ${{a.a_to_b_count}} · <span class="muted">B → A:</span> ${{a.b_to_a_count}}<br><span class="muted">Jam terkait:</span> ${{Number(a.related_hours).toFixed(2)}}<br><span class="muted">Task context:</span> ${{(a.tasks || []).join(", ") || "-"}}<br><span class="muted">Project:</span> ${{(a.projects || []).join(", ") || "-"}}`;
     }}
 
+    function restoreInfoPanel() {{
+      if (hoveredNode) showNodeInfo(hoveredNode);
+      else if (hoveredEdge) showEdgeInfo(hoveredEdge);
+      else if (selectedNode) showNodeInfo(selectedNode);
+      else infoPanel.style.display = "none";
+    }}
+
     function focusNode(node, navigate=false) {{
       selectedNode = node || null;
       if (!node) {{
         search.value = "";
         detail.innerHTML = '<span class="muted">Klik node untuk melihat evidence relasi utama. Gunakan scroll untuk zoom jauh dan drag untuk eksplorasi.</span>';
+        restoreInfoPanel();
         renderer.refresh();
         return;
       }}
       search.value = node;
       nodeDetail(node);
+      showNodeInfo(node);
       if (navigate) {{
         // Sigma camera uses framed/display coordinates, not raw NetworkX graph coordinates.
         const position = renderer.getNodeDisplayData(node);
@@ -379,12 +390,36 @@ def build_sigma_html(
       renderer.refresh();
     }}
 
-    renderer.on("clickNode", ({{node}}) => focusNode(node, false));
-    renderer.on("clickStage", () => focusNode(null));
-    renderer.on("enterNode", ({{node}}) => {{ hoveredNode = node; showNodeInfo(node); renderer.refresh(); }});
-    renderer.on("leaveNode", () => {{ hoveredNode = null; infoPanel.style.display = "none"; renderer.refresh(); }});
-    renderer.on("enterEdge", ({{edge}}) => showEdgeInfo(edge));
-    renderer.on("leaveEdge", () => {{ infoPanel.style.display = "none"; }});
+    renderer.on("clickNode", ({{node}}) => {{
+      suppressNextStageClick = true;
+      focusNode(node, false);
+      setTimeout(() => {{ suppressNextStageClick = false; }}, 0);
+    }});
+    renderer.on("clickStage", () => {{
+      if (suppressNextStageClick) {{
+        suppressNextStageClick = false;
+        return;
+      }}
+      focusNode(null);
+    }});
+    renderer.on("enterNode", ({{node}}) => {{
+      hoveredNode = node;
+      showNodeInfo(node);
+      renderer.refresh();
+    }});
+    renderer.on("leaveNode", () => {{
+      hoveredNode = null;
+      restoreInfoPanel();
+      renderer.refresh();
+    }});
+    renderer.on("enterEdge", ({{edge}}) => {{
+      hoveredEdge = edge;
+      if (!hoveredNode) showEdgeInfo(edge);
+    }});
+    renderer.on("leaveEdge", () => {{
+      hoveredEdge = null;
+      restoreInfoPanel();
+    }});
 
     renderer.on("downNode", ({{node}}) => {{ isDragging = true; draggedNode = node; renderer.getCamera().disable(); }});
     renderer.getMouseCaptor().on("mousemovebody", event => {{
