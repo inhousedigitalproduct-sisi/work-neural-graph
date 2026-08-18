@@ -110,7 +110,7 @@ def build_sigma_html(
         return "<div style='padding:24px;color:#94a3b8'>Tidak ada node untuk ditampilkan.</div>"
 
     n_nodes = max(graph.number_of_nodes(), 1)
-    k = max(0.34, min(1.15, 3.8 / math.sqrt(n_nodes)))
+    k = max(0.28, min(0.95, 3.0 / math.sqrt(n_nodes)))
     positions = nx.spring_layout(
         graph,
         seed=42,
