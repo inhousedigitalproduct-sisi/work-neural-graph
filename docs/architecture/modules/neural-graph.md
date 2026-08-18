@@ -90,6 +90,8 @@ Untuk setiap pasangan employee A/B:
 - Node compact, spring layout adaptif, dan deep zoom tetap dipertahankan.
 - `minCameraRatio = 0.004`, `maxCameraRatio = 10`.
 - Employee search adalah **focus/navigation**, bukan filter yang menghapus graph.
+- Employee search memakai **case-insensitive contains matching** terhadap seluruh nama, sehingga potongan nama depan, tengah, atau belakang dapat digunakan.
+- Search menampilkan maksimum 20 hasil yang cocok dan Enter memilih hasil pertama.
 - Search wajib menggunakan `renderer.getNodeDisplayData(node)` sebelum `camera.animate(...)`; raw NetworkX `x/y` tidak boleh dipakai untuk camera focus.
 - Employee terpilih dan neighbor langsung ditegaskan; node lain diredupkan.
 - Fit Graph / Reset View mengembalikan overview.
@@ -121,7 +123,8 @@ Regression wajib:
 2. mention Note dapat membuat edge meskipun task berbeda;
 3. threshold evidence rebuild node/summary secara konsisten;
 4. employee search memakai Sigma display coordinates sehingga graph tidak hilang saat focus;
-5. source `sigma_renderer.py` harus compile tanpa `SyntaxWarning` / `DeprecationWarning` akibat invalid escape sequence.
+5. employee search harus mendukung case-insensitive contains matching, bukan hanya full-name/prefix selection;
+6. source `sigma_renderer.py` harus compile tanpa `SyntaxWarning` / `DeprecationWarning` akibat invalid escape sequence.
 
 ## Change Contract
 

@@ -194,11 +194,18 @@ def build_sigma_html(
   <meta charset="utf-8" />
   <style>
     html, body {{ margin:0; padding:0; background:#020617; color:#e2e8f0; font-family:Inter,system-ui,-apple-system,sans-serif; overflow:hidden; }}
-    .toolbar {{ height:52px; display:flex; align-items:center; gap:8px; padding:0 10px; border:1px solid #1e293b; border-bottom:0; border-radius:10px 10px 0 0; background:#0f172a; box-sizing:border-box; }}
-    .toolbar select, .toolbar button {{ height:32px; border-radius:7px; border:1px solid #334155; background:#111827; color:#e2e8f0; padding:0 9px; }}
-    .toolbar select {{ min-width:240px; flex:1; }}
+    .toolbar {{ height:52px; display:flex; align-items:center; gap:8px; padding:0 10px; border:1px solid #1e293b; border-bottom:0; border-radius:10px 10px 0 0; background:#0f172a; box-sizing:border-box; position:relative; z-index:10; overflow:visible; }}
+    .toolbar input, .toolbar button {{ height:32px; border-radius:7px; border:1px solid #334155; background:#111827; color:#e2e8f0; padding:0 9px; }}
+    .toolbar input {{ width:100%; box-sizing:border-box; outline:none; }}
+    .toolbar input:focus {{ border-color:#3b82f6; box-shadow:0 0 0 2px rgba(59,130,246,.2); }}
     .toolbar button {{ cursor:pointer; white-space:nowrap; }}
     .toolbar .hint {{ color:#64748b; font-size:10px; white-space:nowrap; }}
+    .search-wrap {{ position:relative; min-width:240px; flex:1; }}
+    .search-results {{ display:none; position:absolute; top:36px; left:0; right:0; z-index:30; max-height:260px; overflow-y:auto; border:1px solid #334155; border-radius:8px; background:#0f172a; box-shadow:0 12px 30px rgba(2,6,23,.48); }}
+    .search-result {{ width:100%; border:0; border-bottom:1px solid rgba(51,65,85,.45); border-radius:0; background:#0f172a; color:#e2e8f0; text-align:left; padding:8px 10px; cursor:pointer; font-size:12px; }}
+    .search-result:last-child {{ border-bottom:0; }}
+    .search-result:hover, .search-result:focus {{ background:#172554; color:#f8fafc; outline:none; }}
+    .search-empty {{ padding:9px 10px; color:#64748b; font-size:11px; }}
     #stage {{ height:560px; position:relative; border:1px solid #1e293b; background:#020617; box-sizing:border-box; }}
     #sigma-container {{ position:absolute; inset:0; }}
     #info-panel {{ position:absolute; display:none; z-index:9; right:12px; top:12px; width:310px; max-height:190px; overflow:auto; padding:10px 12px; border:1px solid #334155; border-radius:9px; background:rgba(15,23,42,.96); font-size:12px; line-height:1.45; }}
@@ -224,7 +231,10 @@ def build_sigma_html(
 </head>
 <body>
   <div class="toolbar">
-    <select id="employee-search"><option value="">Cari / fokus karyawan…</option></select>
+    <div id="employee-search-wrap" class="search-wrap">
+      <input id="employee-search" type="search" placeholder="Cari nama karyawan (contains)…" autocomplete="off" aria-label="Cari karyawan" />
+      <div id="employee-search-results" class="search-results" role="listbox"></div>
+    </div>
     <button id="fit">Fit Graph</button>
     <button id="isolate">Hide Isolated</button>
     <button id="reset">Reset View</button>
@@ -250,7 +260,9 @@ def build_sigma_html(
     const detail = document.getElementById("detail");
     const infoPanel = document.getElementById("info-panel");
     const legend = document.getElementById("legend");
+    const searchWrap = document.getElementById("employee-search-wrap");
     const search = document.getElementById("employee-search");
+    const searchResults = document.getElementById("employee-search-results");
     const fitButton = document.getElementById("fit");
     const isolateButton = document.getElementById("isolate");
     const resetButton = document.getElementById("reset");
@@ -262,12 +274,10 @@ def build_sigma_html(
       `<div class="scale-labels"><span>${{scale.min}} evidence</span><span>${{scale.max}} evidence</span></div>` +
       `<div class="legend-note">Warna node = community/cluster evidence Note.</div>`;
 
-    data.nodes.slice().sort((a,b) => a.label.localeCompare(b.label)).forEach(n => {{
-      const option = document.createElement("option");
-      option.value = n.id;
-      option.textContent = n.label;
-      search.appendChild(option);
-    }});
+    const employeeOptions = data.nodes
+      .slice()
+      .sort((a,b) => a.label.localeCompare(b.label))
+      .map(n => ({{...n, searchLabel: n.label.toLocaleLowerCase()}}));
 
     let selectedNode = null;
     let hoveredNode = null;
@@ -334,6 +344,51 @@ def build_sigma_html(
 
     renderer.getCamera().on("updated", state => {{ cameraRatio = state.ratio; renderer.refresh(); }});
 
+    function closeSearchResults() {{
+      searchResults.style.display = "none";
+      searchResults.innerHTML = "";
+    }}
+
+    function matchingEmployees(query) {{
+      const normalized = String(query || "").trim().toLocaleLowerCase();
+      if (!normalized) return [];
+      return employeeOptions.filter(n => n.searchLabel.includes(normalized)).slice(0, 20);
+    }}
+
+    function chooseEmployee(node) {{
+      search.value = node.label;
+      closeSearchResults();
+      focusNode(node.id, true);
+    }}
+
+    function renderSearchResults(query) {{
+      const matches = matchingEmployees(query);
+      searchResults.innerHTML = "";
+      if (!String(query || "").trim()) {{
+        closeSearchResults();
+        return;
+      }}
+      if (!matches.length) {{
+        const empty = document.createElement("div");
+        empty.className = "search-empty";
+        empty.textContent = "Nama karyawan tidak ditemukan";
+        searchResults.appendChild(empty);
+        searchResults.style.display = "block";
+        return;
+      }}
+      matches.forEach(n => {{
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "search-result";
+        button.setAttribute("role", "option");
+        button.textContent = n.label;
+        button.addEventListener("mousedown", event => event.preventDefault());
+        button.addEventListener("click", () => chooseEmployee(n));
+        searchResults.appendChild(button);
+      }});
+      searchResults.style.display = "block";
+    }}
+
     function topCollaboratorRows(items) {{
       if (!items || !items.length) return '<span class="muted">Belum ada collaborator evidence.</span>';
       return items.slice(0,5).map(item => {{
@@ -372,12 +427,14 @@ def build_sigma_html(
       selectedNode = node || null;
       if (!node) {{
         search.value = "";
+        closeSearchResults();
         detail.innerHTML = '<span class="muted">Klik node untuk melihat evidence relasi utama. Gunakan scroll untuk zoom jauh dan drag untuk eksplorasi.</span>';
         restoreInfoPanel();
         renderer.refresh();
         return;
       }}
-      search.value = node;
+      const attrs = graph.getNodeAttributes(node);
+      search.value = attrs.label || node;
       nodeDetail(node);
       showNodeInfo(node);
       if (navigate) {{
@@ -433,7 +490,27 @@ def build_sigma_html(
     }});
     renderer.getMouseCaptor().on("mouseup", () => {{ isDragging = false; draggedNode = null; renderer.getCamera().enable(); }});
 
-    search.addEventListener("change", () => focusNode(search.value || null, true));
+    search.addEventListener("input", () => renderSearchResults(search.value));
+    search.addEventListener("focus", () => renderSearchResults(search.value));
+    search.addEventListener("keydown", event => {{
+      if (event.key === "Escape") {{
+        closeSearchResults();
+        search.blur();
+        return;
+      }}
+      if (event.key !== "Enter") return;
+      const first = matchingEmployees(search.value)[0];
+      if (!first) return;
+      event.preventDefault();
+      chooseEmployee(first);
+    }});
+    search.addEventListener("search", () => {{
+      if (!search.value.trim()) focusNode(null);
+    }});
+    document.addEventListener("click", event => {{
+      if (!searchWrap.contains(event.target)) closeSearchResults();
+    }});
+
     fitButton.addEventListener("click", () => renderer.getCamera().animatedReset({{duration:360}}));
     isolateButton.addEventListener("click", () => {{
       hideIsolated = !hideIsolated;
