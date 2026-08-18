@@ -264,7 +264,7 @@ def test_imported_filters_come_from_dataset_columns() -> None:
 
 def test_app_navigation_uses_load_data_page_and_no_app_page_content() -> None:
     app_source = Path("app.py").read_text(encoding="utf-8")
-    assert 'st.Page("pages/1_Load_Data.py", title="Load Data", default=True)' in app_source
+    assert 'st.Page("pages/1_Load_Data.py", title="Load Dataset", default=True)' in app_source
     assert "st.navigation(" in app_source
     assert "st.title(" not in app_source
 
