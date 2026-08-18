@@ -93,6 +93,7 @@ Untuk setiap pasangan employee A/B:
 - Search wajib menggunakan `renderer.getNodeDisplayData(node)` sebelum `camera.animate(...)`; raw NetworkX `x/y` tidak boleh dipakai untuk camera focus.
 - Employee terpilih dan neighbor langsung ditegaskan; node lain diredupkan.
 - Fit Graph / Reset View mengembalikan overview.
+- Embedded JavaScript di Python f-string tidak boleh memakai invalid Python escape sequence. Untuk regex sederhana, gunakan character class seperti `[(]`, `[)]`, `[0-9]` atau escaping Python yang eksplisit.
 - Tidak ada impulse/pinball/chevron animation overlay.
 
 ## Insight Contract
@@ -119,7 +120,8 @@ Regression wajib:
 1. employee yang hanya berbagi task tanpa mention Note tidak otomatis mendapat edge Note-based;
 2. mention Note dapat membuat edge meskipun task berbeda;
 3. threshold evidence rebuild node/summary secara konsisten;
-4. employee search memakai Sigma display coordinates sehingga graph tidak hilang saat focus.
+4. employee search memakai Sigma display coordinates sehingga graph tidak hilang saat focus;
+5. source `sigma_renderer.py` harus compile tanpa `SyntaxWarning` / `DeprecationWarning` akibat invalid escape sequence.
 
 ## Change Contract
 
