@@ -71,6 +71,28 @@ def test_unique_automatic_single_name_is_allowed_but_ambiguous_name_is_rejected(
     assert ambiguous.directional_dataframe.empty
 
 
+def test_two_character_automatic_single_name_is_rejected() -> None:
+    dataframe = _frame(
+        [
+            {
+                "entry_id": "1",
+                "employee": "Alice Example",
+                "note": "Diskusi dengan Bo terkait deployment.",
+                "task_key": "T-1",
+                "project": "Alpha",
+            }
+        ]
+    )
+
+    result = extract_collaboration_mentions(
+        dataframe,
+        employee_roster=["Alice Example", "Bo Builder"],
+    )
+
+    assert result.evidence_dataframe.empty
+    assert result.directional_dataframe.empty
+
+
 def test_manual_alias_still_supports_nickname_not_present_in_canonical_name() -> None:
     dataframe = _frame(
         [

@@ -106,9 +106,9 @@ def _employee_candidates(
         candidates[first_last] = max(candidates.get(first_last, 0.0), 0.95)
 
     for token in tokens:
-        if len(token) >= 4 and not token.isdigit():
-            # A single token is accepted only after _build_alias_index proves that
-            # it belongs to exactly one employee in the active canonical roster.
+        if len(token) >= 3 and not token.isdigit():
+            # Short canonical names are common (Ari, Eko, Adi, Ayu). A single token
+            # is still accepted only after _build_alias_index proves it is unique.
             candidates[token] = max(candidates.get(token, 0.0), 0.92)
 
     for alias in manual_aliases.get(employee, ()):  # Manual aliases may safely be single-token nicknames.
@@ -134,9 +134,6 @@ def _build_alias_index(
 
     by_first_token: dict[str, list[tuple[tuple[str, ...], str, str, float]]] = defaultdict(list)
     for alias, owners in alias_owners.items():
-        # Ambiguous aliases are intentionally discarded. This is the safety gate
-        # that allows unique single-token names while rejecting names such as
-        # "Budi" when more than one employee owns that token.
         if len(owners) != 1:
             continue
         employee, confidence = next(iter(owners.items()))
@@ -177,12 +174,7 @@ def extract_collaboration_mentions(
     min_confidence: float = DEFAULT_MIN_CONFIDENCE,
     note_column: str = "note",
 ) -> CollaborationMentionResult:
-    """Extract directional collaboration acknowledgements from timesheet notes.
-
-    Source is always the timesheet owner (`employee`). A target is emitted only when
-    a deterministic, unambiguous employee alias is present in the note. Each target
-    counts at most once per timesheet entry, regardless of repeated mentions.
-    """
+    """Extract directional collaboration acknowledgements from timesheet notes."""
     if dataframe.empty or "employee" not in dataframe.columns or note_column not in dataframe.columns:
         return CollaborationMentionResult(
             pd.DataFrame(columns=EVIDENCE_COLUMNS),
