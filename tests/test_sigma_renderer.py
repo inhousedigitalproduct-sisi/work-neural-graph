@@ -123,6 +123,31 @@ def test_employee_search_uses_case_insensitive_contains_matching() -> None:
     assert '<select id="employee-search">' not in rendered
 
 
+def test_idle_motion_is_lightweight_guarded_and_non_physics() -> None:
+    graph, nodes, edges = _sample_graph()
+
+    rendered = build_sigma_html(
+        graph,
+        nodes,
+        edges,
+        node_size_metric="collaborator_count",
+        edge_width_metric="shared_task_count",
+        show_labels=True,
+    )
+
+    assert "const MOTION_FPS = 24" in rendered
+    assert "const MOTION_MAX_NODES = 250" in rendered
+    assert 'matchMedia("(prefers-reduced-motion: reduce)")' in rendered
+    assert 'document.visibilityState !== "visible"' in rendered
+    assert "window.setInterval(runIdleMotion, MOTION_INTERVAL_MS)" in rendered
+    assert "graph.updateEachNodeAttributes" in rendered
+    assert "Math.sin(time * 0.55" in rendered
+    assert "Math.cos(time * 0.43" in rendered
+    assert "syncMotionBase(releasedNode)" in rendered
+    assert "forceSimulation" not in rendered
+    assert "d3.force" not in rendered
+
+
 def test_sigma_renderer_source_compiles_without_escape_warnings() -> None:
     source_path = Path("src/graph/sigma_renderer.py")
     source = source_path.read_text(encoding="utf-8")
