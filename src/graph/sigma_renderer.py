@@ -335,7 +335,7 @@ def build_sigma_html(
     function topCollaboratorRows(items) {{
       if (!items || !items.length) return '<span class="muted">Belum ada collaborator evidence.</span>';
       return items.slice(0,5).map(item => {{
-        const match = String(item).match(/^(.*) \((\d+) (?:task|evidence)\)$/);
+        const match = String(item).match(/^(.*) [(]([0-9]+) (?:task|evidence)[)]$/);
         if (!match) return `<div class="list-row"><span>${{item}}</span></div>`;
         return `<div class="list-row"><span>${{match[1]}}</span><b>${{match[2]}} evidence</b></div>`;
       }}).join("");
