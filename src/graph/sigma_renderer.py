@@ -20,9 +20,9 @@ COMMUNITY_COLORS = [
     "#c084fc",
     "#fb7185",
 ]
-ISOLATED_COLOR = "#475569"
-COLLABORATION_LOW_COLOR = (71, 85, 105)
-COLLABORATION_HIGH_COLOR = (251, 146, 60)
+ISOLATED_COLOR = "#555861"
+COLLABORATION_LOW_COLOR = (75, 78, 88)
+COLLABORATION_HIGH_COLOR = (139, 92, 246)
 
 
 def _sqrt_scaled(values: pd.Series, minimum: float = 2.2, maximum: float = 5.8) -> dict[str, float]:
@@ -41,7 +41,7 @@ def _sqrt_scaled(values: pd.Series, minimum: float = 2.2, maximum: float = 5.8) 
     }
 
 
-def _linear_scaled(values: pd.Series, minimum: float = 0.65, maximum: float = 2.8) -> dict[str, float]:
+def _linear_scaled(values: pd.Series, minimum: float = 0.55, maximum: float = 2.3) -> dict[str, float]:
     numeric = pd.to_numeric(values, errors="coerce").fillna(0.0)
     if numeric.empty:
         return {}
@@ -99,20 +99,14 @@ def build_sigma_html(
     edge_width_metric: str,
     show_labels: bool,
 ) -> str:
-    """Build a smooth Obsidian-inspired Sigma.js collaboration explorer."""
+    """Build a PixiJS + d3-force collaboration explorer.
+
+    The function name is kept for backward compatibility with the Streamlit page.
+    Physics and rendering now run client-side instead of using Sigma.js or a
+    server-side spring layout.
+    """
     if node_dataframe.empty:
         return "<div style='padding:24px;color:#94a3b8'>Tidak ada node untuk ditampilkan.</div>"
-
-    n_nodes = max(graph.number_of_nodes(), 1)
-    k = max(0.32, min(1.05, 3.2 / math.sqrt(n_nodes)))
-    positions = nx.spring_layout(
-        graph,
-        seed=42,
-        weight="shared_task_count",
-        k=k,
-        iterations=260,
-        scale=1.7,
-    )
 
     node_sizes = _sqrt_scaled(node_dataframe[node_size_metric])
     edge_sizes = _linear_scaled(edge_dataframe[edge_width_metric]) if not edge_dataframe.empty else {}
@@ -128,7 +122,6 @@ def build_sigma_html(
     nodes: list[dict[str, Any]] = []
     for index, row in node_dataframe.reset_index(drop=True).iterrows():
         employee = str(row["employee"])
-        x, y = positions.get(employee, (0.0, 0.0))
         community = int(community_by_node.get(employee, 0))
         collaborator_count = int(row.get("collaborator_count", 0))
         color = COMMUNITY_COLORS[(community - 1) % len(COMMUNITY_COLORS)] if community > 0 else ISOLATED_COLOR
@@ -136,11 +129,8 @@ def build_sigma_html(
             {
                 "id": employee,
                 "label": employee,
-                "x": float(x),
-                "y": float(y),
                 "size": float(node_sizes.get(str(index), 3.5)),
                 "base_color": color,
-                "color": color,
                 "community": community,
                 "isolated": collaborator_count == 0,
                 "collaborator_count": collaborator_count,
@@ -161,9 +151,8 @@ def build_sigma_html(
                 "id": f"edge-{index}",
                 "source": str(row["source"]),
                 "target": str(row["target"]),
-                "size": float(edge_sizes.get(str(index), 0.9)),
+                "size": float(edge_sizes.get(str(index), 0.8)),
                 "base_color": _edge_color(evidence_count, collaboration_min, collaboration_max),
-                "color": _edge_color(evidence_count, collaboration_min, collaboration_max),
                 "collaboration_count": evidence_count,
                 "a_to_b_count": int(row.get("a_to_b_count", 0) or 0),
                 "b_to_a_count": int(row.get("b_to_a_count", 0) or 0),
@@ -186,49 +175,48 @@ def build_sigma_html(
         },
         ensure_ascii=False,
     ).replace("</", "<\\/")
-    label_setting = "true" if show_labels else "false"
 
-    return f"""
+    html = r"""
 <!doctype html>
 <html>
 <head>
   <meta charset="utf-8" />
   <style>
-    html, body {{ margin:0; padding:0; background:#111318; color:#e5e7eb; font-family:Inter,system-ui,-apple-system,sans-serif; overflow:hidden; }}
-    .toolbar {{ height:48px; display:flex; align-items:center; gap:7px; padding:0 9px; border:1px solid #272a31; border-bottom:0; border-radius:9px 9px 0 0; background:#191b20; box-sizing:border-box; position:relative; z-index:10; }}
-    .toolbar input, .toolbar button {{ height:30px; border-radius:6px; border:1px solid #353842; background:#202228; color:#e5e7eb; padding:0 9px; }}
-    .toolbar input {{ width:100%; box-sizing:border-box; outline:none; }}
-    .toolbar input:focus {{ border-color:#7c5cff; box-shadow:0 0 0 2px rgba(124,92,255,.16); }}
-    .toolbar button {{ cursor:pointer; white-space:nowrap; transition:background .14s ease,border-color .14s ease; }}
-    .toolbar button:hover {{ background:#292c34; border-color:#4a4e5b; }}
-    .toolbar .hint {{ color:#737782; font-size:10px; white-space:nowrap; }}
-    .search-wrap {{ position:relative; min-width:240px; flex:1; }}
-    .search-results {{ display:none; position:absolute; top:34px; left:0; right:0; z-index:30; max-height:260px; overflow-y:auto; border:1px solid #3a3d46; border-radius:7px; background:#202228; box-shadow:0 12px 30px rgba(0,0,0,.35); }}
-    .search-result {{ width:100%; border:0; border-bottom:1px solid rgba(80,84,96,.4); border-radius:0; background:#202228; color:#e5e7eb; text-align:left; padding:8px 10px; cursor:pointer; font-size:12px; }}
-    .search-result:hover, .search-result:focus {{ background:#2b273a; color:#fff; outline:none; }}
-    .search-empty {{ padding:9px 10px; color:#7d828d; font-size:11px; }}
-    #stage {{ height:568px; position:relative; border:1px solid #272a31; background:#111318; box-sizing:border-box; }}
-    #sigma-container {{ position:absolute; inset:0; cursor:grab; }}
-    #sigma-container:active {{ cursor:grabbing; }}
-    #info-panel {{ position:absolute; display:none; z-index:9; right:12px; top:12px; width:300px; max-height:180px; overflow:auto; padding:10px 12px; border:1px solid #3a3d46; border-radius:8px; background:rgba(27,29,35,.94); backdrop-filter:blur(6px); font-size:12px; line-height:1.45; }}
-    #legend {{ position:absolute; left:12px; bottom:12px; z-index:7; width:226px; padding:9px 10px; border:1px solid rgba(70,74,86,.78); border-radius:9px; background:rgba(27,29,35,.90); backdrop-filter:blur(6px); }}
-    .legend-title {{ color:#f3f4f6; font-size:11px; font-weight:750; }}
-    .legend-subtitle {{ color:#969ba6; font-size:9px; margin-top:2px; line-height:1.3; }}
-    .scale-bar {{ height:7px; border-radius:999px; margin:8px 0 5px; border:1px solid rgba(255,255,255,.09); }}
-    .scale-labels {{ display:flex; justify-content:space-between; color:#c4c7ce; font-size:9px; font-weight:650; }}
-    .legend-note {{ color:#777c87; font-size:9px; margin-top:6px; }}
-    #detail {{ height:185px; padding:12px; border:1px solid #272a31; border-top:0; border-radius:0 0 9px 9px; background:#191b20; font-size:12px; line-height:1.45; box-sizing:border-box; overflow:hidden; }}
-    .detail-grid {{ display:grid; grid-template-columns:minmax(210px,.8fr) minmax(300px,1.2fr); gap:14px; height:100%; }}
-    .summary-card {{ border:1px solid #30333b; border-radius:8px; padding:10px; background:#202228; height:100%; box-sizing:border-box; overflow:hidden; }}
-    .summary-grid {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:6px; margin-top:8px; }}
-    .metric {{ border:1px solid #30333b; border-radius:7px; padding:6px; background:#181a1f; }}
-    .metric b {{ display:block; font-size:14px; color:#f3f4f6; }}
-    .muted {{ color:#969ba6; }}
-    .title {{ color:#f3f4f6; font-size:14px; font-weight:700; margin-bottom:3px; }}
-    .section-title {{ color:#cfd2d8; font-weight:700; margin-bottom:5px; }}
-    .detail-scroll {{ min-height:0; height:100%; overflow-y:auto; padding-right:4px; }}
-    .list-row {{ display:flex; justify-content:space-between; gap:10px; padding:4px 0; border-bottom:1px solid rgba(80,84,96,.35); }}
-    .pill {{ display:inline-block; margin:3px 3px 0 0; padding:2px 6px; border:1px solid #3a3d46; border-radius:999px; color:#cfd2d8; font-size:10px; }}
+    html, body { margin:0; padding:0; background:#1e1e1e; color:#d8d8d8; font-family:Inter,system-ui,-apple-system,sans-serif; overflow:hidden; }
+    .toolbar { height:46px; display:flex; align-items:center; gap:7px; padding:0 9px; border:1px solid #323232; border-bottom:0; border-radius:8px 8px 0 0; background:#252525; box-sizing:border-box; position:relative; z-index:20; }
+    .toolbar input, .toolbar button { height:29px; border-radius:5px; border:1px solid #3d3d3d; background:#2b2b2b; color:#ddd; padding:0 9px; }
+    .toolbar input { width:100%; box-sizing:border-box; outline:none; }
+    .toolbar input:focus { border-color:#7c5cff; box-shadow:0 0 0 2px rgba(124,92,255,.16); }
+    .toolbar button { cursor:pointer; white-space:nowrap; }
+    .toolbar button:hover { background:#333; border-color:#4a4a4a; }
+    .toolbar .hint { color:#777; font-size:10px; white-space:nowrap; }
+    .search-wrap { position:relative; min-width:240px; flex:1; }
+    .search-results { display:none; position:absolute; top:33px; left:0; right:0; z-index:30; max-height:260px; overflow-y:auto; border:1px solid #454545; border-radius:6px; background:#292929; box-shadow:0 12px 30px rgba(0,0,0,.35); }
+    .search-result { width:100%; border:0; border-bottom:1px solid #343434; border-radius:0; background:#292929; color:#ddd; text-align:left; padding:8px 10px; cursor:pointer; font-size:12px; }
+    .search-result:hover, .search-result:focus { background:#34303f; color:#fff; outline:none; }
+    .search-empty { padding:9px 10px; color:#818181; font-size:11px; }
+    #stage { height:585px; position:relative; border:1px solid #323232; background:#1e1e1e; box-sizing:border-box; overflow:hidden; touch-action:none; }
+    #pixi-container { position:absolute; inset:0; cursor:grab; }
+    #pixi-container.dragging { cursor:grabbing; }
+    #info-panel { position:absolute; display:none; z-index:15; right:12px; top:12px; width:300px; max-height:180px; overflow:auto; padding:10px 12px; border:1px solid #454545; border-radius:7px; background:rgba(37,37,37,.95); font-size:12px; line-height:1.45; pointer-events:none; }
+    #legend { position:absolute; left:12px; bottom:12px; z-index:14; width:228px; padding:9px 10px; border:1px solid #404040; border-radius:8px; background:rgba(37,37,37,.92); pointer-events:none; }
+    .legend-title { color:#efefef; font-size:11px; font-weight:700; }
+    .legend-subtitle { color:#999; font-size:9px; margin-top:2px; line-height:1.3; }
+    .scale-bar { height:7px; border-radius:999px; margin:8px 0 5px; border:1px solid rgba(255,255,255,.08); }
+    .scale-labels { display:flex; justify-content:space-between; color:#c5c5c5; font-size:9px; font-weight:650; }
+    .legend-note { color:#858585; font-size:9px; margin-top:6px; }
+    #detail { height:185px; padding:12px; border:1px solid #323232; border-top:0; border-radius:0 0 8px 8px; background:#252525; font-size:12px; line-height:1.45; box-sizing:border-box; overflow:hidden; }
+    .detail-grid { display:grid; grid-template-columns:minmax(210px,.8fr) minmax(300px,1.2fr); gap:14px; height:100%; }
+    .summary-card { border:1px solid #393939; border-radius:7px; padding:10px; background:#2b2b2b; height:100%; box-sizing:border-box; overflow:hidden; }
+    .summary-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:6px; margin-top:8px; }
+    .metric { border:1px solid #393939; border-radius:6px; padding:6px; background:#222; }
+    .metric b { display:block; font-size:14px; color:#f0f0f0; }
+    .muted { color:#999; }
+    .title { color:#f0f0f0; font-size:14px; font-weight:700; margin-bottom:3px; }
+    .section-title { color:#d3d3d3; font-weight:700; margin-bottom:5px; }
+    .detail-scroll { min-height:0; height:100%; overflow-y:auto; padding-right:4px; }
+    .list-row { display:flex; justify-content:space-between; gap:10px; padding:4px 0; border-bottom:1px solid #383838; }
+    .pill { display:inline-block; margin:3px 3px 0 0; padding:2px 6px; border:1px solid #444; border-radius:999px; color:#ccc; font-size:10px; }
   </style>
 </head>
 <body>
@@ -240,25 +228,23 @@ def build_sigma_html(
     <button id="fit">Fit Graph</button>
     <button id="isolate">Hide Isolated</button>
     <button id="reset">Reset View</button>
-    <span class="hint">hover · click focus · drag · smooth zoom</span>
+    <span class="hint">drag · scroll zoom · physics settle</span>
   </div>
   <div id="stage">
-    <div id="sigma-container"></div>
+    <div id="pixi-container"></div>
     <div id="info-panel"></div>
     <div id="legend"></div>
   </div>
-  <div id="detail"><span class="muted">Klik node untuk fokus relasi langsung. Scroll untuk zoom jauh dan drag untuk eksplorasi.</span></div>
+  <div id="detail"><span class="muted">Klik node untuk fokus relasi langsung. Drag node untuk mengaktifkan physics sementara.</span></div>
 
   <script type="module">
-    import Graph from "https://cdn.jsdelivr.net/npm/graphology@0.26.0/+esm";
-    import Sigma from "https://cdn.jsdelivr.net/npm/sigma@3/+esm";
+    import * as PIXI from "https://cdn.jsdelivr.net/npm/pixi.js@8.13.2/+esm";
+    import { forceSimulation, forceLink, forceManyBody, forceCenter, forceCollide, forceX, forceY } from "https://cdn.jsdelivr.net/npm/d3-force@3/+esm";
 
-    const data = {payload};
-    const graph = new Graph({{type:"undirected", multi:false}});
-    data.nodes.forEach(n => graph.addNode(n.id, n));
-    data.edges.forEach(e => graph.addEdgeWithKey(e.id, e.source, e.target, e));
-
-    const container = document.getElementById("sigma-container");
+    const data = __PAYLOAD__;
+    const SHOW_LABELS = __LABEL_SETTING__;
+    const container = document.getElementById("pixi-container");
+    const stageEl = document.getElementById("stage");
     const detail = document.getElementById("detail");
     const infoPanel = document.getElementById("info-panel");
     const legend = document.getElementById("legend");
@@ -269,217 +255,363 @@ def build_sigma_html(
     const isolateButton = document.getElementById("isolate");
     const resetButton = document.getElementById("reset");
 
-    const scale = data.collaboration_scale || {{min:0,max:0,low_color:"#475569",high_color:"#fb923c"}};
+    const scale = data.collaboration_scale || {min:0,max:0,low_color:"#4b4e58",high_color:"#8b5cf6"};
     legend.innerHTML = `<div class="legend-title">Evidence kolaborasi (Note)</div>` +
-      `<div class="legend-subtitle">Garis makin kuat ketika evidence makin banyak.</div>` +
-      `<div class="scale-bar" style="background:linear-gradient(90deg,${{scale.low_color}},${{scale.high_color}})"></div>` +
-      `<div class="scale-labels"><span>${{scale.min}}</span><span>${{scale.max}} evidence</span></div>` +
-      `<div class="legend-note">Klik node untuk mode focus ala Obsidian.</div>`;
+      `<div class="legend-subtitle">d3-force mengatur posisi; PixiJS/WebGL merender graph.</div>` +
+      `<div class="scale-bar" style="background:linear-gradient(90deg,${scale.low_color},${scale.high_color})"></div>` +
+      `<div class="scale-labels"><span>${scale.min}</span><span>${scale.max} evidence</span></div>` +
+      `<div class="legend-note">Node settle otomatis seperti force graph, bukan idle wobble.</div>`;
 
-    const employeeOptions = data.nodes.slice().sort((a,b) => a.label.localeCompare(b.label)).map(n => ({{...n, searchLabel:n.label.toLocaleLowerCase()}}));
+    const app = new PIXI.Application();
+    await app.init({
+      resizeTo: stageEl,
+      background: "#1e1e1e",
+      antialias: true,
+      autoDensity: true,
+      resolution: Math.min(window.devicePixelRatio || 1, 2),
+      preference: "webgl",
+    });
+    container.appendChild(app.canvas);
+
+    const world = new PIXI.Container();
+    const edgeLayer = new PIXI.Graphics();
+    const nodeLayer = new PIXI.Container();
+    const labelLayer = new PIXI.Container();
+    world.addChild(edgeLayer, nodeLayer, labelLayer);
+    app.stage.addChild(world);
+
+    const nodeById = new Map(data.nodes.map(n => [n.id, n]));
+    const neighbors = new Map(data.nodes.map(n => [n.id, new Set()]));
+    for (const edge of data.edges) {
+      neighbors.get(edge.source)?.add(edge.target);
+      neighbors.get(edge.target)?.add(edge.source);
+    }
+
+    const colorToNumber = value => Number.parseInt(String(value || "#777777").replace("#", ""), 16);
+    const employeeOptions = data.nodes.slice().sort((a,b) => a.label.localeCompare(b.label)).map(n => ({...n, searchLabel:n.label.toLocaleLowerCase()}));
     let selectedNode = null;
     let hoveredNode = null;
-    let hoveredEdge = null;
-    let draggedNode = null;
-    let isDragging = false;
     let hideIsolated = false;
-    let cameraRatio = 1;
-    let refreshQueued = false;
-    let suppressNextStageClick = false;
+    let draggedNode = null;
+    let draggingNode = false;
+    let panning = false;
+    let panStart = null;
+    let worldStart = null;
+    let scaleFactor = 1;
+    let suppressStageTap = false;
 
-    const neighborCache = new Map();
-    graph.forEachNode(node => neighborCache.set(node, new Set(graph.neighbors(node))));
-    const isNeighbor = (node, focus) => !!focus && (neighborCache.get(focus)?.has(node) || false);
+    for (let i = 0; i < data.nodes.length; i += 1) {
+      const n = data.nodes[i];
+      const angle = i * 2.399963229728653;
+      const radius = 14 * Math.sqrt(i + 1);
+      n.x = Math.cos(angle) * radius;
+      n.y = Math.sin(angle) * radius;
+    }
 
-    const renderer = new Sigma(graph, container, {{
-      renderLabels: {label_setting},
-      labelColor: {{attribute:"labelColor", color:"#d7d9df"}},
-      labelSize: 10,
-      labelDensity: 0.52,
-      labelGridCellSize: 70,
-      defaultNodeColor: "#a5a7ad",
-      defaultEdgeColor: "#393c45",
-      enableEdgeEvents: true,
-      minCameraRatio: 0.0025,
-      maxCameraRatio: 14,
-      nodeReducer: (node, attrs) => {{
-        const result = {{...attrs, color:attrs.base_color || attrs.color, labelColor:"#d7d9df"}};
-        if (hideIsolated && attrs.isolated) {{ result.hidden = true; return result; }}
-        const focus = selectedNode || hoveredNode;
-        const neighbor = isNeighbor(node, focus);
-        const important = attrs.collaborator_count >= 4;
-        const zoomAllowsLabel = cameraRatio < 0.72;
-        if (!{label_setting} || (!focus && !important && !zoomAllowsLabel)) result.label = "";
+    const nodeSprites = new Map();
+    const labelSprites = new Map();
 
-        if (focus && node !== focus && !neighbor) {{
-          result.color = "#2a2d34";
-          result.labelColor = "#4f535d";
-          result.size = Math.max(1.45, attrs.size * 0.78);
-          result.zIndex = 0;
-        }} else if (node === focus) {{
-          result.color = "#8b5cf6";
-          result.labelColor = "#ffffff";
-          result.size = Math.max(4.0, Math.min(7.4, attrs.size * 1.22));
-          result.forceLabel = true;
-          result.zIndex = 8;
-        }} else if (neighbor) {{
-          result.color = attrs.base_color || attrs.color;
-          result.labelColor = "#f3f4f6";
-          result.size = Math.max(2.6, Math.min(6.4, attrs.size * 1.04));
-          result.forceLabel = true;
-          result.zIndex = 5;
-        }}
-        return result;
-      }},
-      edgeReducer: (edge, attrs) => {{
-        const result = {{...attrs, color:attrs.base_color || attrs.color}};
-        const focus = selectedNode || hoveredNode;
-        if (focus) {{
-          const [source, target] = graph.extremities(edge);
-          const connected = source === focus || target === focus;
-          if (!connected) {{
-            result.color = "#24272d";
-            result.size = Math.max(0.22, attrs.size * 0.36);
-            result.zIndex = 0;
-          }} else {{
-            result.color = selectedNode ? "#7655d9" : "#6d5aa8";
-            result.size = Math.max(1.0, Math.min(3.8, attrs.size * 1.12));
-            result.zIndex = 6;
-          }}
-        }} else {{
-          result.size = Math.max(0.45, attrs.size * 0.78);
-        }}
-        return result;
-      }},
-    }});
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"}[ch]));
+    }
 
-    function scheduleRefresh() {{
-      if (refreshQueued) return;
-      refreshQueued = true;
-      requestAnimationFrame(() => {{ refreshQueued = false; renderer.refresh(); }});
-    }}
+    function nodeRadius(node) {
+      return Math.max(3.4, Math.min(8.5, 2.6 + Number(node.size || 3.5) * 0.8));
+    }
 
-    renderer.getCamera().on("updated", state => {{
-      cameraRatio = state.ratio;
-      scheduleRefresh();
-    }});
+    function makeNodeSprite(node) {
+      const g = new PIXI.Graphics();
+      g.circle(0, 0, nodeRadius(node)).fill(colorToNumber(node.base_color));
+      g.eventMode = "static";
+      g.cursor = "pointer";
+      g.on("pointerover", () => {
+        hoveredNode = node.id;
+        showNodeInfo(node.id);
+        refreshStyles();
+      });
+      g.on("pointerout", () => {
+        hoveredNode = null;
+        restoreInfoPanel();
+        refreshStyles();
+      });
+      g.on("pointertap", event => {
+        event.stopPropagation();
+        suppressStageTap = true;
+        focusNode(node.id, false);
+        queueMicrotask(() => { suppressStageTap = false; });
+      });
+      g.on("pointerdown", event => {
+        event.stopPropagation();
+        draggingNode = true;
+        draggedNode = node;
+        node.fx = node.x;
+        node.fy = node.y;
+        simulation.alphaTarget(0.16).restart();
+      });
+      nodeLayer.addChild(g);
+      nodeSprites.set(node.id, g);
 
-    function closeSearchResults() {{ searchResults.style.display = "none"; searchResults.innerHTML = ""; }}
-    function matchingEmployees(query) {{
+      const label = new PIXI.Text({
+        text: node.label,
+        style: new PIXI.TextStyle({fontFamily:"Inter, system-ui, sans-serif", fontSize:10, fill:"#cfcfcf"}),
+      });
+      label.anchor.set(0.5, 0);
+      label.eventMode = "none";
+      labelLayer.addChild(label);
+      labelSprites.set(node.id, label);
+    }
+
+    data.nodes.forEach(makeNodeSprite);
+
+    const simulation = forceSimulation(data.nodes)
+      .force("link", forceLink(data.edges).id(d => d.id).distance(d => Math.max(72, 138 - Math.min(50, Number(d.collaboration_count || 1) * 5))).strength(d => Math.min(0.55, 0.10 + Number(d.collaboration_count || 1) * 0.045)))
+      .force("charge", forceManyBody().strength(d => d.isolated ? -95 : -185).distanceMax(650))
+      .force("center", forceCenter(0, 0).strength(0.055))
+      .force("collide", forceCollide().radius(d => nodeRadius(d) + 18).strength(0.92).iterations(2))
+      .force("x", forceX(0).strength(0.018))
+      .force("y", forceY(0).strength(0.018))
+      .alpha(1)
+      .alphaDecay(0.021)
+      .alphaMin(0.002)
+      .velocityDecay(0.38)
+      .on("tick", drawGraph)
+      .on("end", () => drawGraph());
+
+    function connectedToFocus(edge, focus) {
+      const source = typeof edge.source === "object" ? edge.source.id : edge.source;
+      const target = typeof edge.target === "object" ? edge.target.id : edge.target;
+      return source === focus || target === focus;
+    }
+
+    function drawGraph() {
+      edgeLayer.clear();
+      const focus = selectedNode || hoveredNode;
+      for (const edge of data.edges) {
+        const source = typeof edge.source === "object" ? edge.source : nodeById.get(edge.source);
+        const target = typeof edge.target === "object" ? edge.target : nodeById.get(edge.target);
+        if (!source || !target) continue;
+        if (hideIsolated && (source.isolated || target.isolated)) continue;
+        const active = !!focus && connectedToFocus(edge, focus);
+        const dimmed = !!focus && !active;
+        const edgeColor = active ? 0x7c5cff : colorToNumber(edge.base_color);
+        const alpha = active ? 0.88 : dimmed ? 0.07 : 0.22;
+        const width = active ? Math.max(1.05, Number(edge.size || 0.8) * 1.15) : Math.max(0.45, Number(edge.size || 0.8) * 0.72);
+        edgeLayer.moveTo(source.x, source.y).lineTo(target.x, target.y).stroke({width, color:edgeColor, alpha});
+      }
+
+      for (const node of data.nodes) {
+        const sprite = nodeSprites.get(node.id);
+        const label = labelSprites.get(node.id);
+        if (!sprite || !label) continue;
+        sprite.position.set(node.x, node.y);
+        label.position.set(node.x, node.y + nodeRadius(node) + 3);
+      }
+      refreshStyles(false);
+    }
+
+    function refreshStyles(redraw=true) {
+      const focus = selectedNode || hoveredNode;
+      for (const node of data.nodes) {
+        const sprite = nodeSprites.get(node.id);
+        const label = labelSprites.get(node.id);
+        if (!sprite || !label) continue;
+        const hidden = hideIsolated && node.isolated;
+        sprite.visible = !hidden;
+        label.visible = !hidden;
+        if (hidden) continue;
+        const neighbor = !!focus && (neighbors.get(focus)?.has(node.id) || false);
+        const active = node.id === focus;
+        const unrelated = !!focus && !active && !neighbor;
+        sprite.clear();
+        sprite.circle(0, 0, active ? nodeRadius(node) * 1.24 : neighbor ? nodeRadius(node) * 1.07 : nodeRadius(node))
+          .fill(active ? 0x8b5cf6 : colorToNumber(node.base_color));
+        sprite.alpha = unrelated ? 0.16 : neighbor ? 0.96 : 0.90;
+        label.alpha = unrelated ? 0.18 : 1;
+        label.style.fill = active ? "#ffffff" : unrelated ? "#666666" : "#d2d2d2";
+        const important = Number(node.collaborator_count || 0) >= 4;
+        label.visible = !hidden && SHOW_LABELS && (active || neighbor || important || scaleFactor >= 1.25);
+      }
+      if (redraw) drawGraph();
+    }
+
+    function boundsOfVisibleNodes() {
+      const visible = data.nodes.filter(n => !(hideIsolated && n.isolated));
+      if (!visible.length) return {minX:-1,maxX:1,minY:-1,maxY:1};
+      return {
+        minX: Math.min(...visible.map(n => n.x)), maxX: Math.max(...visible.map(n => n.x)),
+        minY: Math.min(...visible.map(n => n.y)), maxY: Math.max(...visible.map(n => n.y)),
+      };
+    }
+
+    function fitGraph(animated=true) {
+      const bounds = boundsOfVisibleNodes();
+      const width = Math.max(1, bounds.maxX - bounds.minX);
+      const height = Math.max(1, bounds.maxY - bounds.minY);
+      const targetScale = Math.max(0.18, Math.min(2.4, 0.82 * Math.min(stageEl.clientWidth / width, stageEl.clientHeight / height)));
+      const centerX = (bounds.minX + bounds.maxX) / 2;
+      const centerY = (bounds.minY + bounds.maxY) / 2;
+      const targetX = stageEl.clientWidth / 2 - centerX * targetScale;
+      const targetY = stageEl.clientHeight / 2 - centerY * targetScale;
+      animateWorld(targetX, targetY, targetScale, animated ? 420 : 0);
+    }
+
+    function animateWorld(targetX, targetY, targetScale, duration=420) {
+      const fromX = world.x, fromY = world.y, fromScale = scaleFactor;
+      if (!duration) {
+        world.position.set(targetX, targetY);
+        world.scale.set(targetScale);
+        scaleFactor = targetScale;
+        refreshStyles();
+        return;
+      }
+      const started = performance.now();
+      const tick = now => {
+        const t = Math.min(1, (now - started) / duration);
+        const eased = t < 0.5 ? 2*t*t : 1 - Math.pow(-2*t+2, 2)/2;
+        scaleFactor = fromScale + (targetScale - fromScale) * eased;
+        world.position.set(fromX + (targetX - fromX)*eased, fromY + (targetY - fromY)*eased);
+        world.scale.set(scaleFactor);
+        if (t < 1) requestAnimationFrame(tick);
+        else refreshStyles();
+      };
+      requestAnimationFrame(tick);
+    }
+
+    function focusNode(id, navigate=false) {
+      selectedNode = id || null;
+      if (!selectedNode) {
+        search.value = "";
+        closeSearchResults();
+        detail.innerHTML = '<span class="muted">Klik node untuk fokus relasi langsung. Drag node untuk mengaktifkan physics sementara.</span>';
+        restoreInfoPanel();
+        refreshStyles();
+        return;
+      }
+      const node = nodeById.get(selectedNode);
+      if (!node) return;
+      search.value = node.label || node.id;
+      nodeDetail(selectedNode);
+      showNodeInfo(selectedNode);
+      refreshStyles();
+      if (navigate) {
+        const targetScale = Math.max(scaleFactor, 1.35);
+        animateWorld(stageEl.clientWidth/2 - node.x*targetScale, stageEl.clientHeight/2 - node.y*targetScale, targetScale, 420);
+      }
+    }
+
+    function closeSearchResults() { searchResults.style.display = "none"; searchResults.innerHTML = ""; }
+    function matchingEmployees(query) {
       const normalized = String(query || "").trim().toLocaleLowerCase();
       if (!normalized) return [];
       return employeeOptions.filter(n => n.searchLabel.includes(normalized)).slice(0,20);
-    }}
-    function renderSearchResults(query) {{
+    }
+    function renderSearchResults(query) {
       const matches = matchingEmployees(query);
       searchResults.innerHTML = "";
-      if (!String(query || "").trim()) {{ closeSearchResults(); return; }}
-      if (!matches.length) {{
+      if (!String(query || "").trim()) { closeSearchResults(); return; }
+      if (!matches.length) {
         const empty = document.createElement("div");
         empty.className = "search-empty";
         empty.textContent = "Nama karyawan tidak ditemukan";
         searchResults.appendChild(empty);
         searchResults.style.display = "block";
         return;
-      }}
-      matches.forEach(n => {{
+      }
+      matches.forEach(n => {
         const button = document.createElement("button");
         button.type = "button";
         button.className = "search-result";
         button.textContent = n.label;
         button.addEventListener("mousedown", event => event.preventDefault());
-        button.addEventListener("click", () => {{ search.value = n.label; closeSearchResults(); focusNode(n.id, true); search.blur(); }});
+        button.addEventListener("click", () => { search.value = n.label; closeSearchResults(); focusNode(n.id, true); search.blur(); });
         searchResults.appendChild(button);
-      }});
+      });
       searchResults.style.display = "block";
-    }}
+    }
 
-    function topCollaboratorRows(items) {{
+    function topCollaboratorRows(items) {
       if (!items || !items.length) return '<span class="muted">Belum ada collaborator evidence.</span>';
-      return items.slice(0,5).map(item => `<div class="list-row"><span>${{item}}</span></div>`).join("");
-    }}
-    function nodeDetail(node) {{
-      const a = graph.getNodeAttributes(node);
-      const tasks = (a.top_tasks || []).slice(0,5).map(x => `<span class="pill">${{x}}</span>`).join("");
-      detail.innerHTML = `<div class="detail-grid"><div class="summary-card"><div class="title">${{a.label}}</div><div class="summary-grid"><div class="metric"><b>${{a.collaborator_count}}</b><span class="muted">Collaborators</span></div><div class="metric"><b>${{a.collaborative_task_count}}</b><span class="muted">Note evidence</span></div><div class="metric"><b>${{a.project_count}}</b><span class="muted">Projects</span></div><div class="metric"><b>${{Number(a.collaborative_hours).toFixed(1)}}</b><span class="muted">Related hours</span></div></div></div><div class="detail-scroll"><div class="section-title">Top Collaborators</div>${{topCollaboratorRows(a.top_collaborators)}}<div class="section-title" style="margin-top:9px">Task Context</div>${{tasks || '<span class="muted">Belum ada task context.</span>'}}</div></div>`;
-    }}
-    function showNodeInfo(node) {{
-      const a = graph.getNodeAttributes(node);
+      return items.slice(0,5).map(item => `<div class="list-row"><span>${escapeHtml(item)}</span></div>`).join("");
+    }
+    function nodeDetail(id) {
+      const a = nodeById.get(id);
+      const tasks = (a.top_tasks || []).slice(0,5).map(x => `<span class="pill">${escapeHtml(x)}</span>`).join("");
+      detail.innerHTML = `<div class="detail-grid"><div class="summary-card"><div class="title">${escapeHtml(a.label)}</div><div class="summary-grid"><div class="metric"><b>${a.collaborator_count}</b><span class="muted">Collaborators</span></div><div class="metric"><b>${a.collaborative_task_count}</b><span class="muted">Note evidence</span></div><div class="metric"><b>${a.project_count}</b><span class="muted">Projects</span></div><div class="metric"><b>${Number(a.collaborative_hours).toFixed(1)}</b><span class="muted">Related hours</span></div></div></div><div class="detail-scroll"><div class="section-title">Top Collaborators</div>${topCollaboratorRows(a.top_collaborators)}<div class="section-title" style="margin-top:9px">Task Context</div>${tasks || '<span class="muted">Belum ada task context.</span>'}</div></div>`;
+    }
+    function showNodeInfo(id) {
+      const a = nodeById.get(id);
+      if (!a) return;
       infoPanel.style.display = "block";
-      infoPanel.innerHTML = `<div class="title">${{a.label}}</div><b>${{a.collaborator_count}}</b> collaborator · <b>${{a.collaborative_task_count}}</b> Note evidence · <b>${{Number(a.collaborative_hours).toFixed(2)}}</b> related hours`;
-    }}
-    function showEdgeInfo(edge) {{
-      const a = graph.getEdgeAttributes(edge);
-      infoPanel.style.display = "block";
-      infoPanel.innerHTML = `<div class="title">${{a.source}} ↔ ${{a.target}}</div><b>${{a.collaboration_count}} evidence Note</b><br><span class="muted">A → B:</span> ${{a.a_to_b_count}} · <span class="muted">B → A:</span> ${{a.b_to_a_count}}<br><span class="muted">Jam terkait:</span> ${{Number(a.related_hours).toFixed(2)}}<br><span class="muted">Task context:</span> ${{(a.tasks || []).join(", ") || "-"}}<br><span class="muted">Project:</span> ${{(a.projects || []).join(", ") || "-"}}`;
-    }}
-    function restoreInfoPanel() {{
+      infoPanel.innerHTML = `<div class="title">${escapeHtml(a.label)}</div><b>${a.collaborator_count}</b> collaborator · <b>${a.collaborative_task_count}</b> Note evidence · <b>${Number(a.collaborative_hours).toFixed(2)}</b> related hours`;
+    }
+    function restoreInfoPanel() {
       if (hoveredNode) showNodeInfo(hoveredNode);
-      else if (hoveredEdge) showEdgeInfo(hoveredEdge);
       else if (selectedNode) showNodeInfo(selectedNode);
       else infoPanel.style.display = "none";
-    }}
+    }
 
-    function focusNode(node, navigate=false) {{
-      selectedNode = node || null;
-      if (!node) {{
-        search.value = "";
-        closeSearchResults();
-        detail.innerHTML = '<span class="muted">Klik node untuk fokus relasi langsung. Scroll untuk zoom jauh dan drag untuk eksplorasi.</span>';
-        restoreInfoPanel();
-        scheduleRefresh();
-        return;
-      }}
-      const attrs = graph.getNodeAttributes(node);
-      search.value = attrs.label || node;
-      nodeDetail(node);
-      showNodeInfo(node);
-      if (navigate) {{
-        const position = renderer.getNodeDisplayData(node);
-        if (position) renderer.getCamera().animate({{x:position.x,y:position.y,ratio:Math.min(0.34, cameraRatio)}}, {{duration:520, easing:"quadraticInOut"}});
-      }}
-      scheduleRefresh();
-    }}
-
-    renderer.on("clickNode", ({{node}}) => {{
-      suppressNextStageClick = true;
-      focusNode(node, false);
-      setTimeout(() => {{ suppressNextStageClick = false; }}, 0);
-    }});
-    renderer.on("clickStage", () => {{
-      if (suppressNextStageClick) {{ suppressNextStageClick = false; return; }}
+    app.stage.eventMode = "static";
+    app.stage.hitArea = app.screen;
+    app.stage.on("pointertap", () => {
+      if (suppressStageTap || draggingNode) return;
       focusNode(null);
-    }});
-    renderer.on("enterNode", ({{node}}) => {{ hoveredNode = node; showNodeInfo(node); scheduleRefresh(); }});
-    renderer.on("leaveNode", () => {{ hoveredNode = null; restoreInfoPanel(); scheduleRefresh(); }});
-    renderer.on("enterEdge", ({{edge}}) => {{ hoveredEdge = edge; if (!hoveredNode) showEdgeInfo(edge); }});
-    renderer.on("leaveEdge", () => {{ hoveredEdge = null; restoreInfoPanel(); }});
-
-    renderer.on("downNode", ({{node}}) => {{
-      isDragging = true;
-      draggedNode = node;
-      renderer.getCamera().disable();
-    }});
-    renderer.getMouseCaptor().on("mousemovebody", event => {{
-      if (!isDragging || !draggedNode) return;
-      const pos = renderer.viewportToGraph(event);
-      graph.setNodeAttribute(draggedNode, "x", pos.x);
-      graph.setNodeAttribute(draggedNode, "y", pos.y);
-      event.preventSigmaDefault?.();
-      event.original?.preventDefault?.();
-      event.original?.stopPropagation?.();
-    }});
-    renderer.getMouseCaptor().on("mouseup", () => {{
-      isDragging = false;
+    });
+    app.stage.on("pointerdown", event => {
+      if (draggingNode) return;
+      panning = true;
+      panStart = {x:event.global.x, y:event.global.y};
+      worldStart = {x:world.x, y:world.y};
+      container.classList.add("dragging");
+    });
+    app.stage.on("pointermove", event => {
+      if (draggingNode && draggedNode) {
+        const local = world.toLocal(event.global);
+        draggedNode.fx = local.x;
+        draggedNode.fy = local.y;
+        draggedNode.x = local.x;
+        draggedNode.y = local.y;
+        drawGraph();
+        return;
+      }
+      if (panning && panStart && worldStart) {
+        world.position.set(worldStart.x + event.global.x - panStart.x, worldStart.y + event.global.y - panStart.y);
+      }
+    });
+    const endPointer = () => {
+      if (draggingNode && draggedNode) {
+        draggedNode.fx = null;
+        draggedNode.fy = null;
+        simulation.alphaTarget(0).alpha(0.34).restart();
+      }
+      draggingNode = false;
       draggedNode = null;
-      renderer.getCamera().enable();
-      scheduleRefresh();
-    }});
+      panning = false;
+      panStart = null;
+      worldStart = null;
+      container.classList.remove("dragging");
+    };
+    app.stage.on("pointerup", endPointer);
+    app.stage.on("pointerupoutside", endPointer);
+
+    stageEl.addEventListener("wheel", event => {
+      event.preventDefault();
+      const rect = stageEl.getBoundingClientRect();
+      const pointer = new PIXI.Point(event.clientX - rect.left, event.clientY - rect.top);
+      const before = world.toLocal(pointer);
+      const factor = Math.exp(-event.deltaY * 0.0013);
+      const nextScale = Math.max(0.08, Math.min(8, scaleFactor * factor));
+      scaleFactor = nextScale;
+      world.scale.set(nextScale);
+      const after = world.toGlobal(before);
+      world.position.x += pointer.x - after.x;
+      world.position.y += pointer.y - after.y;
+      refreshStyles();
+    }, {passive:false});
 
     search.addEventListener("input", () => renderSearchResults(search.value));
     search.addEventListener("focus", () => renderSearchResults(search.value));
-    search.addEventListener("keydown", event => {{
-      if (event.key === "Escape") {{ closeSearchResults(); search.blur(); return; }}
+    search.addEventListener("keydown", event => {
+      if (event.key === "Escape") { closeSearchResults(); search.blur(); return; }
       if (event.key !== "Enter") return;
       const first = matchingEmployees(search.value)[0];
       if (!first) return;
@@ -488,24 +620,41 @@ def build_sigma_html(
       closeSearchResults();
       focusNode(first.id, true);
       search.blur();
-    }});
-    search.addEventListener("search", () => {{ if (!search.value.trim()) focusNode(null); }});
-    document.addEventListener("click", event => {{ if (!searchWrap.contains(event.target)) closeSearchResults(); }});
+    });
+    search.addEventListener("search", () => { if (!search.value.trim()) focusNode(null); });
+    document.addEventListener("click", event => { if (!searchWrap.contains(event.target)) closeSearchResults(); });
 
-    fitButton.addEventListener("click", () => renderer.getCamera().animatedReset({{duration:520, easing:"quadraticInOut"}}));
-    isolateButton.addEventListener("click", () => {{
+    fitButton.addEventListener("click", () => fitGraph(true));
+    isolateButton.addEventListener("click", () => {
       hideIsolated = !hideIsolated;
       isolateButton.textContent = hideIsolated ? "Show Isolated" : "Hide Isolated";
-      scheduleRefresh();
-    }});
-    resetButton.addEventListener("click", () => {{
-      focusNode(null);
+      simulation.alpha(0.24).restart();
+      refreshStyles();
+      setTimeout(() => fitGraph(true), 120);
+    });
+    resetButton.addEventListener("click", () => {
+      selectedNode = null;
+      hoveredNode = null;
       hideIsolated = false;
       isolateButton.textContent = "Hide Isolated";
-      renderer.getCamera().animatedReset({{duration:520, easing:"quadraticInOut"}});
-      scheduleRefresh();
-    }});
+      search.value = "";
+      closeSearchResults();
+      detail.innerHTML = '<span class="muted">Klik node untuk fokus relasi langsung. Drag node untuk mengaktifkan physics sementara.</span>';
+      simulation.alpha(0.42).restart();
+      restoreInfoPanel();
+      refreshStyles();
+      setTimeout(() => fitGraph(true), 180);
+    });
+
+    simulation.on("tick.fit", () => {
+      if (simulation.alpha() < 0.06 && !world.__initialFitDone) {
+        world.__initialFitDone = true;
+        fitGraph(true);
+      }
+    });
+    setTimeout(() => { if (!world.__initialFitDone) { world.__initialFitDone = true; fitGraph(true); } }, 900);
   </script>
 </body>
 </html>
 """
+    return html.replace("__PAYLOAD__", payload).replace("__LABEL_SETTING__", "true" if show_labels else "false")

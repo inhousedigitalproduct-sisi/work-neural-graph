@@ -73,6 +73,18 @@ def _sample_graph() -> tuple[nx.Graph, pd.DataFrame, pd.DataFrame]:
     return graph, nodes, edges
 
 
+def _render() -> str:
+    graph, nodes, edges = _sample_graph()
+    return build_sigma_html(
+        graph,
+        nodes,
+        edges,
+        node_size_metric="collaborator_count",
+        edge_width_metric="shared_task_count",
+        show_labels=True,
+    )
+
+
 def test_node_scale_stays_compact() -> None:
     scaled = _sqrt_scaled(pd.Series([1, 4, 16]))
 
@@ -80,71 +92,59 @@ def test_node_scale_stays_compact() -> None:
     assert max(scaled.values()) <= 5.8
 
 
-def test_sigma_renderer_supports_obsidian_smooth_deep_zoom_and_focus() -> None:
-    graph, nodes, edges = _sample_graph()
+def test_renderer_uses_pixijs_webgl_and_d3_force() -> None:
+    rendered = _render()
 
-    rendered = build_sigma_html(
-        graph,
-        nodes,
-        edges,
-        node_size_metric="collaborator_count",
-        edge_width_metric="shared_task_count",
-        show_labels=True,
-    )
+    assert "pixi.js@8.13.2" in rendered
+    assert "d3-force@3" in rendered
+    assert 'preference: "webgl"' in rendered
+    assert "new PIXI.Application()" in rendered
+    assert "forceSimulation(data.nodes)" in rendered
+    assert 'force("link", forceLink(data.edges)' in rendered
+    assert 'force("charge", forceManyBody()' in rendered
+    assert 'force("center", forceCenter(0, 0)' in rendered
+    assert 'force("collide", forceCollide()' in rendered
+    assert ".velocityDecay(0.38)" in rendered
+    assert "Sigma" not in rendered
+    assert "spring_layout" not in rendered
 
-    assert "minCameraRatio: 0.0025" in rendered
-    assert "maxCameraRatio: 14" in rendered
-    assert "Evidence kolaborasi (Note)" in rendered
-    assert "renderer.getNodeDisplayData(node)" in rendered
+
+def test_renderer_supports_smooth_zoom_pan_focus_and_physics_restart() -> None:
+    rendered = _render()
+
     assert "requestAnimationFrame" in rendered
-    assert "quadraticInOut" in rendered
-    assert "duration:520" in rendered
-    assert "Math.min(7.4, attrs.size * 1.22)" in rendered
-    assert "Math.min(3.8, attrs.size * 1.12)" in rendered
+    assert "animateWorld(" in rendered
+    assert 'stageEl.addEventListener("wheel"' in rendered
+    assert "Math.exp(-event.deltaY * 0.0013)" in rendered
+    assert "world.toLocal(event.global)" in rendered
+    assert "simulation.alphaTarget(0.16).restart()" in rendered
+    assert "simulation.alphaTarget(0).alpha(0.34).restart()" in rendered
+    assert "focusNode(n.id, true)" in rendered
+    assert "Evidence kolaborasi (Note)" in rendered
 
 
 def test_employee_search_uses_case_insensitive_contains_matching() -> None:
-    graph, nodes, edges = _sample_graph()
-
-    rendered = build_sigma_html(
-        graph,
-        nodes,
-        edges,
-        node_size_metric="collaborator_count",
-        edge_width_metric="shared_task_count",
-        show_labels=True,
-    )
+    rendered = _render()
 
     assert '<input id="employee-search" type="search"' in rendered
     assert "employee-search-results" in rendered
     assert "n.searchLabel.includes(normalized)" in rendered
-    assert "search.addEventListener(\"input\"" in rendered
+    assert 'search.addEventListener("input"' in rendered
     assert "focusNode(n.id, true)" in rendered
     assert '<select id="employee-search">' not in rendered
 
 
-def test_idle_wobble_motion_is_removed_for_obsidian_style_smoothness() -> None:
-    graph, nodes, edges = _sample_graph()
+def test_renderer_has_force_settle_without_idle_wobble() -> None:
+    rendered = _render()
 
-    rendered = build_sigma_html(
-        graph,
-        nodes,
-        edges,
-        node_size_metric="collaborator_count",
-        edge_width_metric="shared_task_count",
-        show_labels=True,
-    )
-
-    assert "const MOTION_FPS = 24" not in rendered
-    assert "const MOTION_MAX_NODES = 250" not in rendered
+    assert ".alphaDecay(0.021)" in rendered
+    assert ".alphaMin(0.002)" in rendered
+    assert 'simulation.on("tick.fit"' in rendered
+    assert "const MOTION_FPS" not in rendered
     assert "runIdleMotion" not in rendered
     assert "MOTION_INTERVAL_MS" not in rendered
-    assert "Math.sin(time * 0.55" not in rendered
-    assert "Math.cos(time * 0.43" not in rendered
-    assert "window.setInterval(runIdleMotion" not in rendered
-    assert "forceSimulation" not in rendered
-    assert "d3.force" not in rendered
-    assert "requestAnimationFrame" in rendered
+    assert "Math.sin(time *" not in rendered
+    assert "Math.cos(time *" not in rendered
 
 
 def test_sigma_renderer_source_compiles_without_escape_warnings() -> None:
