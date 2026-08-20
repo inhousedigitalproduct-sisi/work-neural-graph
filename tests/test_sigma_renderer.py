@@ -80,7 +80,7 @@ def test_node_scale_stays_compact() -> None:
     assert max(scaled.values()) <= 5.8
 
 
-def test_sigma_renderer_supports_deep_zoom_note_evidence_and_display_coordinate_focus() -> None:
+def test_sigma_renderer_supports_obsidian_smooth_deep_zoom_and_focus() -> None:
     graph, nodes, edges = _sample_graph()
 
     rendered = build_sigma_html(
@@ -92,15 +92,15 @@ def test_sigma_renderer_supports_deep_zoom_note_evidence_and_display_coordinate_
         show_labels=True,
     )
 
-    assert "minCameraRatio: 0.004" in rendered
-    assert "maxCameraRatio: 10" in rendered
+    assert "minCameraRatio: 0.0025" in rendered
+    assert "maxCameraRatio: 14" in rendered
     assert "Evidence kolaborasi (Note)" in rendered
     assert "renderer.getNodeDisplayData(node)" in rendered
-    assert "ratio: 0.28" in rendered
-    assert "const attrs = graph.getNodeAttributes(node);\n        renderer.getCamera().animate" not in rendered
-    assert "Math.min(6.2, attrs.size * 1.05)" in rendered
-    assert "Math.min(3.8, attrs.size * 1.15)" in rendered
-    assert "requestAnimationFrame" not in rendered
+    assert "requestAnimationFrame" in rendered
+    assert "quadraticInOut" in rendered
+    assert "duration:520" in rendered
+    assert "Math.min(7.4, attrs.size * 1.22)" in rendered
+    assert "Math.min(3.8, attrs.size * 1.12)" in rendered
 
 
 def test_employee_search_uses_case_insensitive_contains_matching() -> None:
@@ -119,11 +119,11 @@ def test_employee_search_uses_case_insensitive_contains_matching() -> None:
     assert "employee-search-results" in rendered
     assert "n.searchLabel.includes(normalized)" in rendered
     assert "search.addEventListener(\"input\"" in rendered
-    assert "chooseEmployee(first)" in rendered
+    assert "focusNode(n.id, true)" in rendered
     assert '<select id="employee-search">' not in rendered
 
 
-def test_idle_motion_is_lightweight_guarded_and_non_physics() -> None:
+def test_idle_wobble_motion_is_removed_for_obsidian_style_smoothness() -> None:
     graph, nodes, edges = _sample_graph()
 
     rendered = build_sigma_html(
@@ -135,17 +135,16 @@ def test_idle_motion_is_lightweight_guarded_and_non_physics() -> None:
         show_labels=True,
     )
 
-    assert "const MOTION_FPS = 24" in rendered
-    assert "const MOTION_MAX_NODES = 250" in rendered
-    assert 'matchMedia("(prefers-reduced-motion: reduce)")' in rendered
-    assert 'document.visibilityState !== "visible"' in rendered
-    assert "window.setInterval(runIdleMotion, MOTION_INTERVAL_MS)" in rendered
-    assert "graph.updateEachNodeAttributes" in rendered
-    assert "Math.sin(time * 0.55" in rendered
-    assert "Math.cos(time * 0.43" in rendered
-    assert "syncMotionBase(releasedNode)" in rendered
+    assert "const MOTION_FPS = 24" not in rendered
+    assert "const MOTION_MAX_NODES = 250" not in rendered
+    assert "runIdleMotion" not in rendered
+    assert "MOTION_INTERVAL_MS" not in rendered
+    assert "Math.sin(time * 0.55" not in rendered
+    assert "Math.cos(time * 0.43" not in rendered
+    assert "window.setInterval(runIdleMotion" not in rendered
     assert "forceSimulation" not in rendered
     assert "d3.force" not in rendered
+    assert "requestAnimationFrame" in rendered
 
 
 def test_sigma_renderer_source_compiles_without_escape_warnings() -> None:
