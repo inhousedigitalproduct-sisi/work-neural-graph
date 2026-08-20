@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
@@ -186,11 +188,11 @@ sigma_html = build_sigma_html(
     edge_width_metric="shared_task_count",
     show_labels=show_labels,
 )
-# Visibility isolated dikontrol Streamlit agar summary/search/detail memakai graph yang sama.
-sigma_html = sigma_html.replace(
-    '<button id="isolate">Hide Isolated</button>',
-    '<button id="isolate" style="display:none" aria-hidden="true">Hide Isolated</button>',
-)
+# Force a fresh iframe document on every Streamlit rerun. This prevents the
+# long-lived PixiJS canvas from keeping the previous graph after scope filters,
+# threshold, isolated visibility, node sizing, or label settings change.
+render_nonce = uuid4().hex
+sigma_html = sigma_html.replace("<body>", f'<body data-render-nonce="{render_nonce}">', 1)
 components.html(sigma_html, height=835, scrolling=False)
 
 with st.expander("Cara membaca Collaboration Graph", expanded=False):
@@ -202,7 +204,7 @@ with st.expander("Cara membaca Collaboration Graph", expanded=False):
 - **Warna & ketebalan garis = jumlah evidence Note** pada pasangan tersebut.
 - **Minimum evidence Note** memfilter relasi dan menghitung ulang node, collaborator, ranking, cluster, search, detail, dan summary graph.
 - **Show Isolated** menampilkan employee tanpa evidence relasi pada threshold aktif.
-- Klik atau cari employee untuk menonjolkan relasi langsung. Search memindahkan kamera ke posisi dot employee pada koordinat display Sigma.
+- Klik atau cari employee untuk menonjolkan relasi langsung. Search memindahkan kamera ke posisi dot employee pada koordinat display PixiJS.
 - Nama satu kata yang unik di seluruh roster diterima dengan confidence 92% mulai dari 3 karakter; token ambigu ditolak.
 - Satu target dihitung maksimum sekali per timesheet entry meskipun namanya disebut berulang pada Note yang sama.
 - Tidak adanya evidence Note berarti **tidak ditemukan evidence penyebutan kolaborator**, bukan bukti bahwa employee tidak berkolaborasi.
