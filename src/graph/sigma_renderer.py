@@ -12,8 +12,8 @@ COMMUNITY_COLORS = [
     "#22d3ee", "#facc15", "#4ade80", "#c084fc", "#fb7185",
 ]
 ISOLATED_COLOR = "#666666"
-COLLABORATION_LOW_COLOR = (72, 72, 78)
-COLLABORATION_HIGH_COLOR = (124, 92, 255)
+COLLABORATION_LOW_COLOR = (112, 112, 124)
+COLLABORATION_HIGH_COLOR = (150, 120, 255)
 
 
 def _sqrt_scaled(values: pd.Series, minimum: float = 2.2, maximum: float = 5.8) -> dict[str, float]:
@@ -197,7 +197,7 @@ html,body{margin:0;background:#1e1e1e;color:#ddd;font-family:Inter,system-ui,-ap
   const hoverCard = document.getElementById('hover-card');
   const legend = document.getElementById('legend');
   const detail = document.getElementById('detail');
-  const scale = data.collaboration_scale || {min:0,max:0,low_color:'#48484e',high_color:'#7c5cff'};
+  const scale = data.collaboration_scale || {min:0,max:0,low_color:'#70707c',high_color:'#9678ff'};
 
   function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[ch]));
@@ -348,7 +348,11 @@ html,body{margin:0;background:#1e1e1e;color:#ddd;font-family:Inter,system-ui,-ap
         if (!s || !t) return;
         const active = focus && (s.id === focus || t.id === focus);
         const dim = focus && !active;
-        edgeLayer.lineStyle(active ? Math.max(1.1,e.size) : Math.max(0.5,e.size*0.7), active ? 0x7c5cff : hex(e.color), active ? 0.9 : dim ? 0.05 : 0.22);
+        edgeLayer.lineStyle(
+          active ? Math.max(1.35,e.size) : Math.max(0.8,e.size*0.85),
+          active ? 0xa78bfa : hex(e.color),
+          active ? 0.96 : dim ? 0.07 : 0.48
+        );
         edgeLayer.moveTo(s.x,s.y).lineTo(t.x,t.y);
       });
       data.nodes.forEach(n => {
