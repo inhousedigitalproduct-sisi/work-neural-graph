@@ -92,9 +92,13 @@ if filtered.empty:
     st.info("Scope yang dipilih tidak menghasilkan data. Ubah Nama Project atau Range Date.")
     st.stop()
 
+# The mention roster must follow the active project/date scope. Using the full
+# dataset roster allowed a note inside the selected project to create a node for
+# an employee who had no timesheet row in that filtered scope.
+scoped_employee_roster = filtered["employee"].dropna().astype(str).tolist()
 mention_result = extract_collaboration_mentions(
     filtered,
-    employee_roster=source_dataframe["employee"].dropna().astype(str).tolist(),
+    employee_roster=scoped_employee_roster,
     aliases=load_employee_aliases(),
 )
 result = build_note_collaboration_graph(filtered, mention_result, include_isolated=True)
