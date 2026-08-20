@@ -72,6 +72,31 @@ def test_renderer_supports_zoom_pan_drag_and_force_restart() -> None:
     assert "simulation.alphaTarget(0).alpha(.32).restart()" in rendered
 
 
+def test_renderer_restores_hover_legend_and_click_detail() -> None:
+    rendered = _render()
+    assert 'id="hover-card"' in rendered
+    assert "function renderHover(nodeId)" in rendered
+    assert "g.on('pointerover'" in rendered
+    assert 'id="legend"' in rendered
+    assert "Evidence kolaborasi (Note)" in rendered
+    assert "linear-gradient(90deg" in rendered
+    assert 'id="detail"' in rendered
+    assert "function renderDetail(nodeId)" in rendered
+    assert "Top Collaborators" in rendered
+    assert "Task Context" in rendered
+    assert "renderDetail(selected)" in rendered
+
+
+def test_renderer_payload_keeps_interaction_metadata() -> None:
+    rendered = _render()
+    assert '"collaboration_scale"' in rendered
+    assert '"top_collaborators"' in rendered
+    assert '"top_tasks"' in rendered
+    assert '"a_to_b_count"' in rendered
+    assert '"b_to_a_count"' in rendered
+    assert '"related_hours"' in rendered
+
+
 def test_renderer_has_visible_error_diagnostics() -> None:
     rendered = _render()
     assert "Graph renderer error:" in rendered
@@ -84,6 +109,8 @@ def test_employee_search_uses_case_insensitive_contains_matching() -> None:
     assert '<input id="search" type="search"' in rendered
     assert "toLocaleLowerCase" in rendered
     assert ".includes(q)" in rendered
+    assert "renderDetail(n.id)" in rendered
+    assert "renderHover(n.id)" in rendered
 
 
 def test_renderer_has_force_settle_without_idle_wobble() -> None:
